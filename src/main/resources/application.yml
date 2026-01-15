@@ -4,7 +4,7 @@ spring:
   config:
     import: "configserver:"
   profiles:
-    active: prod #prod
+    active: dev #prod
   cloud:
     config:
-      uri: http://infra-config-server:8888  #http://localhost:8888 - http://infra-config-server:8888
+      uri: http://localhost:8888  #http://localhost:8888 - http://infra-config-server:8888

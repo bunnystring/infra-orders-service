@@ -10,6 +10,7 @@ import com.infragest.infra_orders_service.enums.OrderState;
 import com.infragest.infra_orders_service.event.OrderEvent;
 import com.infragest.infra_orders_service.excepcion.DeviceUnavailableException;
 import com.infragest.infra_orders_service.excepcion.OrderException;
+import com.infragest.infra_orders_service.model.DevicesBatchRq;
 import com.infragest.infra_orders_service.model.OrderItemDto;
 import com.infragest.infra_orders_service.model.OrderRq;
 import com.infragest.infra_orders_service.model.OrderRs;
@@ -348,11 +349,29 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
+    /**
+     * Verifica la existencia de dispositivos por sus ID y recupera sus estados actuales.
+     *
+     * @param deviceIds una lista de {@link UUID}s que representan los ID de los dispositivos que se deben verificar.
+     *                  No debe ser {@code null} ni estar vacía.
+     * @return un {@link Map} donde las llaves son los ID de los dispositivos ({@link UUID}) y los valores
+     *         son sus estados correspondientes como cadenas de texto ({@link String}). Nunca retorna {@code null}.
+     * @throws DeviceUnavailableException si ocurre un error de comunicación con el servicio externo,
+     *                                    si el servicio no responde correctamente o si hay dispositivos
+     *                                    que no pudieron ser encontrados. El tipo de excepción relacionado
+     *                                    se indica en {@link DeviceUnavailableException.Type}.
+     */
     public Map<UUID, String> verifyDevicesAndFetchState(List<UUID> deviceIds) {
         List<Map<String, Object>> devices;
         try {
+
+            // Crea un objeto DevicesBatchRq con la lista de ID
+            DevicesBatchRq devicesBatchRq = DevicesBatchRq.builder()
+                    .ids(deviceIds)
+                    .build();
+
             // Llama al servicio de dispositivos para obtener sus estados
-            devices = devicesClient.getDevicesByIds(Map.of("ids", deviceIds));
+            devices = devicesClient.getDevicesByIds(devicesBatchRq);
         } catch (FeignException fe) {
             log.error("Error comunicándose con el servicio de dispositivos: {}", fe.getMessage());
             throw new DeviceUnavailableException(
