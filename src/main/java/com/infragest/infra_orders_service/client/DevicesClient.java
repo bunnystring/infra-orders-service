@@ -1,5 +1,7 @@
 package com.infragest.infra_orders_service.client;
 
+import com.infragest.infra_orders_service.config.FeignClientConfig;
+import com.infragest.infra_orders_service.model.DevicesBatchRq;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -13,7 +15,7 @@ import java.util.Map;
  * @author bunnystring
  * @since 2025-11-19
  */
-@FeignClient(name = "infra-devices-service")
+@FeignClient(name = "infra-devices-service", url = "http://localhost:8080", configuration = FeignClientConfig.class)
 public interface DevicesClient {
 
     /**
@@ -22,8 +24,8 @@ public interface DevicesClient {
      * @param body mapa con key "ids" -> List<UUID>
      * @return lista de mapas con la información de cada equipo (id, state, model, etc.)
      */
-    @PostMapping("/devices/batch")
-    List<Map<String, Object>> getDevicesByIds(@RequestBody Map<String, Object> body);
+    @PostMapping("/api/devices/batch")
+    List<Map<String, Object>> getDevicesByIds(@RequestBody DevicesBatchRq devicesBatchRq);
 
     /**
      * Reserva o actualiza el estado de una lista de devices.
@@ -31,7 +33,7 @@ public interface DevicesClient {
      * @param body ejemplo: { "deviceIds": [...], "state": "OCCUPIED" }
      * @return mapa con keys como "success" (Boolean) y "message" (String)
      */
-    @PostMapping("/devices/reserve")
+    @PostMapping("/api/devices/reserve")
     Map<String, Object> reserveDevices(@RequestBody Map<String, Object> body);
 
     /**
@@ -39,6 +41,6 @@ public interface DevicesClient {
      *
      * @return mapa con "success" y opcional "message"
      */
-    @PostMapping("/devices/restore")
+    @PostMapping("/api/devices/restore")
     Map<String, Object> restoreDeviceStates(@RequestBody Map<String, Object> body);
 }

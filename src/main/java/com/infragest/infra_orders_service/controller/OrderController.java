@@ -9,7 +9,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -28,6 +30,7 @@ import java.util.UUID;
  * @author bunnystring
  * @since 2025-11-19
  */
+@Slf4j
 @RestController
 @RequestMapping("/orders")
 public class OrderController {
@@ -64,6 +67,8 @@ public class OrderController {
     })
     @PostMapping
     public ResponseEntity<OrderRs> createOrder(@Valid @RequestBody OrderRq orderRequest) {
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        log.info("Autenticación antes de Feign: {}", authentication != null ? authentication.getName() : "Ninguna");
         return ResponseEntity.status(201).body(orderService.createOrder(orderRequest));
     }
 
