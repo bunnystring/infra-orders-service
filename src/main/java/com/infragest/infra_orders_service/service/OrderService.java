@@ -38,7 +38,7 @@ public interface OrderService {
      * @param id UUID de la orden
      * @return Optional con {@link OrderRs} si existe, vacío si no existe
      */
-    Optional<OrderRs> getOrder(UUID id);
+    OrderRs getOrder(UUID id);
 
     /**
      * Cambia el estado de una orden y ejecuta las acciones asociadas al cambio.
