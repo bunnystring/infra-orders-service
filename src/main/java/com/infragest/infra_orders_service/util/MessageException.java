@@ -30,6 +30,9 @@ public abstract class MessageException {
     public static final String GROUP_NO_MEMBERS = "El grupo %s no tiene miembros con email";
     public static final String EMPLOYEE_NOT_ACTIVE = "El empleado %s no está activo";
     public static final String EMPLOYEE_NO_EMAIL = "El empleado %s no tiene email registrado";
+    public static final String GROUP_NOT_FOUND = "El grupo %s no fue encontrado.";
+    public static final String EMPLOYEE_INACTIVE = "El empleado %s no está activo.";
+    public static final String EMPLOYEE_NOT_FOUND = "El empleado %s no fue encontrado.";
 
     // Request / validation / UUID
     public static final String INVALID_REQUEST = "Request inválido";
@@ -40,5 +43,6 @@ public abstract class MessageException {
     public static final String OPERATION_NOT_ALLOWED = "Operación no permitida: %s";
     public static final String DATABASE_ERROR = "Error en la base de datos";
     public static final String INTERNAL_ERROR = "Error interno del servidor";
+    public static final String DEPENDENCY_ERROR = "Error al comunicarse con un servicio dependiente.";
 
 }

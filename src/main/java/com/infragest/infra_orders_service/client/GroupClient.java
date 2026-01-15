@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-@FeignClient(name = "infra-groups_service")
+@FeignClient(name = "infra-groups-service", contextId = "groupClient")
 public interface GroupClient {
 
 
