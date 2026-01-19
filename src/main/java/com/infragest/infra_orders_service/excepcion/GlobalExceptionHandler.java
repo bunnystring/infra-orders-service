@@ -99,6 +99,36 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Maneja {@link GroupUnavailableExcepction}.
+     *
+     * Esta excepción indica problemas específicos relacionados con los grupos/empleados,
+     * en la comunicación con servicios externos relacionados a dispositivos.
+     *
+     * Mapea el tipo de error (`GroupUnavailableExcepction.Type`) a códigos de estado HTTP como
+     * 400 (Bad Request), 404 (Not Found), 409 (Conflict), o 500 (Internal Server Error).
+     *
+     * @param ex la excepción generada al consultar grupos o empleados
+     * @return ResponseEntity con los detalles del error y el código HTTP adecuado
+     */
+    @ExceptionHandler(GroupUnavailableExcepction.class)
+    public ResponseEntity<Map<String, Object>> handleGroupUnavailableException(GroupUnavailableExcepction ex) {
+        // Determinar el código de estado HTTP basado en el tipo de error
+        HttpStatus status = switch (ex.getType()) {
+            case NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case BAD_REQUEST -> HttpStatus.BAD_REQUEST;
+            case CONFLICT -> HttpStatus.CONFLICT;
+            case INTERNAL_SERVER -> HttpStatus.INTERNAL_SERVER_ERROR;
+            default -> HttpStatus.BAD_REQUEST; // Otros casos predeterminados siguen como BAD_REQUEST
+        };
+
+        // Registrar el error en los logs
+        log.error("GroupUnavailableExcepction occurred: {}", ex.getMessage());
+
+        // Construir y devolver la respuesta
+        return buildErrorResponse("Group Error", status, ex.getMessage());
+    }
+
+    /**
      * Maneja excepciones no controladas y devuelve 500 (Internal Server Error).
      *
      * Este manejador captura cualquier excepción no definida explícitamente en otros

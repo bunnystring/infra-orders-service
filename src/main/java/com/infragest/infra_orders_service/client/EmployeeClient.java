@@ -11,6 +11,6 @@ import java.util.UUID;
 @FeignClient(name = "infra-groups-service", contextId = "employeeClient", configuration = FeignClientConfig.class)
 public interface EmployeeClient {
 
-    @GetMapping("/employees/{id}")
+    @GetMapping("/api/employees/{id}")
     Map<String, Object> getEmployee(@PathVariable("id") UUID id);
 }
