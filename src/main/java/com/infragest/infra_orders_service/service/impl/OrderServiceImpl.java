@@ -9,11 +9,9 @@ import com.infragest.infra_orders_service.enums.AssigneeType;
 import com.infragest.infra_orders_service.enums.OrderState;
 import com.infragest.infra_orders_service.event.OrderEvent;
 import com.infragest.infra_orders_service.excepcion.DeviceUnavailableException;
+import com.infragest.infra_orders_service.excepcion.GroupUnavailableExcepction;
 import com.infragest.infra_orders_service.excepcion.OrderException;
-import com.infragest.infra_orders_service.model.DevicesBatchRq;
-import com.infragest.infra_orders_service.model.OrderItemDto;
-import com.infragest.infra_orders_service.model.OrderRq;
-import com.infragest.infra_orders_service.model.OrderRs;
+import com.infragest.infra_orders_service.model.*;
 import com.infragest.infra_orders_service.repository.OrderItemRepository;
 import com.infragest.infra_orders_service.repository.OrderRepository;
 import com.infragest.infra_orders_service.service.OrderService;
@@ -90,9 +88,6 @@ public class OrderServiceImpl implements OrderService {
     @Transactional
     public OrderRs createOrder(OrderRq rq) {
 
-        // Validar la solicitud
-        validateRequest(rq);
-
         // Verificar dispositivos y obtener su estado original
         Map<UUID, String> originalStates = verifyDevicesAndFetchState(rq.getDevicesIds());
 
@@ -104,8 +99,8 @@ public class OrderServiceImpl implements OrderService {
 
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
 
-        // Publicar el evento (opcional, elimínalo si no se usa ahora mismo)
-        publishOrderCreatedEvent(savedOrder);
+        // Publicar el evento
+        //publishOrderCreatedEvent(savedOrder);
 
         // Mapear y devolver la orden como DTO
         return toOrderRs(savedOrder);
@@ -205,7 +200,7 @@ public class OrderServiceImpl implements OrderService {
                 return validateEmployeeAndEmail(assigneeId);
             } else {
                 throw new OrderException(
-                        String.format("El tipo de assignee '%s' no es válido.", assigneeType),
+                        String.format("El tipo de assignation '%s' no es válido.", assigneeType),
                         OrderException.Type.BAD_REQUEST
                 );
             }
@@ -226,8 +221,24 @@ public class OrderServiceImpl implements OrderService {
      * @throws OrderException Si el grupo no existe o no tiene miembros con correos válidos.
      */
     private List<String> validateGroupAndEmails(UUID groupId) {
+        Map<String, Object> group;
+
         // Consultar la existencia del grupo
-        Map<String, Object> group = groupClient.getGroup(groupId);
+        try {
+            // Consultar la existencia del grupo a través del cliente Feign
+           group = groupClient.getGroup(groupId);
+
+        } catch (FeignException fe) {
+            // Loguea el error de comunicación con el microservicio de grupos
+            log.error("Error comunicándose con el servicio de grupos: {}", fe.getMessage());
+
+            // Lanza una excepción personalizada para el servicio de grupos
+            throw new GroupUnavailableExcepction(
+                    "Error al comunicarse con el servicio de grupos.",
+                    GroupUnavailableExcepction.Type.INTERNAL_SERVER
+            );
+        }
+
         if (group == null || group.isEmpty()) {
             throw new OrderException(
                     String.format(MessageException.GROUP_NOT_FOUND, groupId),
@@ -235,8 +246,23 @@ public class OrderServiceImpl implements OrderService {
             );
         }
 
-        // Obtener los correos de los miembros
-        List<String> emails = groupClient.getGroupMembersEmails(groupId);
+        List<String> emails;
+
+        try {
+            // Obtener los correos de los miembros desde el servicio de grupos
+            emails = groupClient.getGroupMembersEmails(groupId);
+
+        } catch (FeignException fe) {
+            // Loguea el error de comunicación con el microservicio de grupos
+            log.error("Error comunicándose con el servicio de grupos al obtener miembros: {}", fe.getMessage());
+
+            // Lanza una excepción personalizada en caso de error
+            throw new GroupUnavailableExcepction(
+                    "Error al comunicarse con el servicio de grupos al intentar obtener miembros.",
+                    GroupUnavailableExcepction.Type.INTERNAL_SERVER
+            );
+        }
+
         if (emails == null || emails.isEmpty()) {
             throw new OrderException(
                     String.format(MessageException.GROUP_NO_MEMBERS, groupId),
@@ -248,7 +274,7 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * Valida la existencia de un empleado y obtiene su correo electrónico.
+     * Válida la existencia de un empleado y obtiene su correo electrónico.
      *
      * @param employeeId UUID del empleado.
      * @return Una lista con el correo electrónico del empleado.
@@ -313,15 +339,6 @@ public class OrderServiceImpl implements OrderService {
                 .build();
     }
 
-    private void validateRequest(OrderRq rq) {
-        if (rq == null || rq.getDevicesIds() == null || rq.getDevicesIds().isEmpty()) {
-            throw new OrderException(MessageException.INVALID_REQUEST, OrderException.Type.BAD_REQUEST);
-        }
-        if (rq.getAssigneeId() == null || rq.getAssigneeType() == null) {
-            throw new OrderException(MessageException.INVALID_REQUEST, OrderException.Type.BAD_REQUEST);
-        }
-    }
-
     private Map<UUID, String> parseDeviceResponse(List<Map<String, Object>> devices, List<UUID> unavailable) {
         Map<UUID, String> originalStates = new HashMap<>();
         for (Map<String, Object> d : devices) {
@@ -362,7 +379,7 @@ public class OrderServiceImpl implements OrderService {
      *                                    se indica en {@link DeviceUnavailableException.Type}.
      */
     public Map<UUID, String> verifyDevicesAndFetchState(List<UUID> deviceIds) {
-        List<Map<String, Object>> devices;
+        List<DeviceRs> devices;
         try {
 
             // Crea un objeto DevicesBatchRq con la lista de ID
@@ -391,13 +408,13 @@ public class OrderServiceImpl implements OrderService {
         return processDeviceStates(devices);
     }
 
-    private Map<UUID, String> processDeviceStates(List<Map<String, Object>> devices) {
+    private Map<UUID, String> processDeviceStates(List<DeviceRs> devices) {
         Map<UUID, String> originalStates = new HashMap<>();
         List<UUID> unavailableDevices = new ArrayList<>();
 
-        for (Map<String, Object> device : devices) {
-            UUID deviceId = parseDeviceId(device.get("id"));
-            String state = String.valueOf(device.get("status"));
+        for (DeviceRs device : devices) {
+            UUID deviceId = parseDeviceId(device.getId());
+            String state = String.valueOf(device.getStatus());
 
             originalStates.put(deviceId, state);
 
@@ -418,16 +435,24 @@ public class OrderServiceImpl implements OrderService {
         return originalStates;
     }
 
+    /**
+     * Reserva dispositivo mediante una llamada al servicio de dispositivos.
+     *
+     * @param deviceIds Una lista de identificadores únicos ({@link UUID}) de los dispositivos
+     *                  que se deben reservar. La lista no debe ser {@code null} ni estar vacía.
+     * @throws DeviceUnavailableException La respuesta del servicio indica que los dispositivos no pudieron ser reservados.
+     * Ocurre un error de comunicación con el servicio `devices`.
+     */
     private void reserveDevices(List<UUID> deviceIds) {
         Map<String, Object> reserveRequest = Map.of("deviceIds", deviceIds, "state", "OCCUPIED");
         try {
-            Map<String, Object> response = devicesClient.reserveDevices(reserveRequest);
-            Boolean success = (Boolean) response.getOrDefault("success", false);
+            ApiResponseDto<Void> response = devicesClient.reserveDevices(reserveRequest);
 
-            if (!success) {
-                String message = String.valueOf(response.getOrDefault("message", "No se pudo reservar los dispositivos."));
-                throw new DeviceUnavailableException(message, DeviceUnavailableException.Type.CONFLICT);
+            // Verifica el éxito de la operación
+            if (!response.isSuccess()) {
+                throw new DeviceUnavailableException(response.getMessage(), DeviceUnavailableException.Type.CONFLICT);
             }
+
         } catch (FeignException fe) {
             log.error("Error al reservar dispositivos: {}", fe.getMessage());
             throw new DeviceUnavailableException(

@@ -22,7 +22,7 @@ public interface GroupClient {
      * @param id UUID del grupo
      * @return mapa con la información del grupo (id, name, ...) o null
      */
-    @GetMapping("/groups/{id}")
+    @GetMapping("/api/groups/{id}")
     Map<String, Object> getGroup(@PathVariable("id") UUID id);
 
     /**
@@ -31,11 +31,11 @@ public interface GroupClient {
      * @param id UUID del grupo
      * @return lista de emails (puede ser vacía)
      */
-    @GetMapping("/groups/{id}/members/emails")
+    @GetMapping("/api/groups/{id}/members/emails")
     List<String> getGroupMembersEmails(@PathVariable("id") UUID id);
 
 
-    @PostMapping("/groups/{id}/employees")
+    @PostMapping("/api/groups/{id}/employees")
     Map<String, Object> assignEmployees(@PathVariable("id") UUID id,
                                         @RequestBody Map<String, Object> body);
 
