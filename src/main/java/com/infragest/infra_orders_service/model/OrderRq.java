@@ -3,6 +3,7 @@ package com.infragest.infra_orders_service.model;
 import com.infragest.infra_orders_service.enums.AssigneeType;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -26,6 +27,7 @@ public class OrderRq {
     /**
      * Descripción opcional para la orden.
      */
+    @Size(max = 1000, message = "La descripción debe tener máximo 1000 caracteres.")
     private String description;
 
     /**

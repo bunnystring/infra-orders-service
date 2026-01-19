@@ -4,6 +4,7 @@ package com.infragest.infra_orders_service.entity;
 import com.infragest.infra_orders_service.enums.AssigneeType;
 import com.infragest.infra_orders_service.enums.OrderState;
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Size;
 import lombok.*;
 
 import java.util.ArrayList;
@@ -20,7 +21,10 @@ import java.util.UUID;
  * @since 2025-11-19
  */
 @Entity
-@Table(name = "rental_order")
+@Table(name = "rental_order", indexes = {
+        @Index(name = "idx_order_state", columnList = "state"),
+        @Index(name = "idx_order_assignee_id", columnList = "assignee_id")
+})
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -33,6 +37,7 @@ public class Order extends BaseEntity{
      * Descripción libre de la orden (máx. 1000 caracteres).
      */
     @Column(length = 1000)
+    @Size(max = 1000, message = "La descripción no puede exceder de 1000 caracteres")
     private String description;
 
     /**

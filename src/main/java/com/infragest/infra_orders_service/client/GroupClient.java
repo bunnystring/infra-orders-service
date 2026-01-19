@@ -1,6 +1,7 @@
 package com.infragest.infra_orders_service.client;
 
 
+import com.infragest.infra_orders_service.config.FeignClientConfig;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -11,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-@FeignClient(name = "infra-groups_service")
+@FeignClient(name = "infra-groups-service", contextId = "groupClient", configuration = FeignClientConfig.class)
 public interface GroupClient {
 
 
@@ -21,7 +22,7 @@ public interface GroupClient {
      * @param id UUID del grupo
      * @return mapa con la información del grupo (id, name, ...) o null
      */
-    @GetMapping("/groups/{id}")
+    @GetMapping("/api/groups/{id}")
     Map<String, Object> getGroup(@PathVariable("id") UUID id);
 
     /**
@@ -30,11 +31,11 @@ public interface GroupClient {
      * @param id UUID del grupo
      * @return lista de emails (puede ser vacía)
      */
-    @GetMapping("/groups/{id}/members/emails")
+    @GetMapping("/api/groups/{id}/members/emails")
     List<String> getGroupMembersEmails(@PathVariable("id") UUID id);
 
 
-    @PostMapping("/groups/{id}/employees")
+    @PostMapping("/api/groups/{id}/employees")
     Map<String, Object> assignEmployees(@PathVariable("id") UUID id,
                                         @RequestBody Map<String, Object> body);
 
