@@ -12,6 +12,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * Feign client para comunicarse con infra-groups-service.
+ *
+ * @author bunnystring
+ * @since 2026-01-19
+ */
 @FeignClient(name = "infra-groups-service", contextId = "groupClient", configuration = FeignClientConfig.class)
 public interface GroupClient {
 
