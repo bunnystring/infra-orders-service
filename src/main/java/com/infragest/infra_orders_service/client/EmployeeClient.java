@@ -10,7 +10,7 @@ import java.util.UUID;
 
 
 /**
- * Feign client para comunicarse con infra-groups-service.
+ * Feign client para comunicarse con los endpoints de empleados en infra-groups-service.
  *
  * @author bunnystring
  * @since 2026-01-19

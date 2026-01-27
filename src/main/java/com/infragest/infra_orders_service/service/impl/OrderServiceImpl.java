@@ -7,7 +7,9 @@ import com.infragest.infra_orders_service.config.RabbitMQConfig;
 import com.infragest.infra_orders_service.entity.Order;
 import com.infragest.infra_orders_service.entity.OrderItem;
 import com.infragest.infra_orders_service.enums.AssigneeType;
+import com.infragest.infra_orders_service.enums.NotificationStatus;
 import com.infragest.infra_orders_service.enums.OrderState;
+import com.infragest.infra_orders_service.event.NotificationEvent;
 import com.infragest.infra_orders_service.event.OrderEvent;
 import com.infragest.infra_orders_service.excepcion.DeviceUnavailableException;
 import com.infragest.infra_orders_service.excepcion.GroupUnavailableExcepction;
@@ -464,29 +466,40 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
+    /**
+     * Crea y guarda una nueva orden junto con sus elementos (items) en la base de datos.
+     *
+     * @param rq La solicitud de creación de la orden, que incluye la descripción, el tipo de asignado
+     *           ({@code assigneeType}), el identificador del asignado ({@code assigneeId}) y la lista de IDs de dispositivos.
+     * @param originalStates Un mapa donde las llaves son los IDs de los dispositivos asociados a la
+     *                       orden y los valores son los estados originales de esos dispositivos.
+     *                       Si un dispositivo no tiene un estado en este mapa, se usará "UNKNOWN" como valor predeterminado.
+     * @return La entidad {@link Order} recién creada y persistida en la base de datos.
+     */
     private Order saveOrderAndItems(OrderRq rq, Map<UUID, String> originalStates) {
-        // 1. Crear la entidad Order
+
+        // Crear la entidad Order
         Order order = Order.builder()
-                .description(rq.getDescription()) // Descripción opcional
-                .state(OrderState.CREATED) // El estado inicial es CREATED
-                .assigneeType(rq.getAssigneeType()) // Tipo de assignee
-                .assigneeId(rq.getAssigneeId()) // ID del assignee
+                .description(rq.getDescription())
+                .state(OrderState.CREATED)
+                .assigneeType(rq.getAssigneeType())
+                .assigneeId(rq.getAssigneeId())
                 .build();
 
-        // 2. Crear los items de la orden basados en los deviceIds
+        // Crear los items de la orden basados en los deviceIds
         List<OrderItem> items = rq.getDevicesIds().stream()
                 .map(deviceId -> OrderItem.builder()
-                        .order(order) // Relacionar con la orden
-                        .deviceId(deviceId) // ID del dispositivo asociado
+                        .order(order)
+                        .deviceId(deviceId)
                         .originalDeviceState(originalStates.getOrDefault(deviceId, "UNKNOWN")) // Estado original del dispositivo
                         .build()
                 )
                 .collect(Collectors.toList());
 
-        // 3. Asociar los items creados con la entidad Order
+        // Asociar los items creados con la entidad Order
         order.setItems(items);
 
-        // 4. Guardar la entidad Order (con los items) en la base de datos
+        // Guardar la entidad Order (con los items) en la base de datos
         return orderRepository.save(order);
     }
 
@@ -525,6 +538,53 @@ public class OrderServiceImpl implements OrderService {
                     ex.getMessage(),
                     ex
             );
+        }
+    }
+
+    /**
+     * Lógica para actualizar el estado de la notificación en las órdenes.
+     *
+     * @param notificationEvent evento que contiene los detalles de la confirmación.
+     */
+    public void updateOrderNotificationStatus(NotificationEvent notificationEvent) {
+        log.info("Actualizando estado de notificación para la orden ID: {}, Estado: {}",
+                notificationEvent.getOrderId(),
+                notificationEvent.getStatus());
+
+        Optional<Order> optionalOrder = orderRepository.findById(notificationEvent.getOrderId());
+
+        if (optionalOrder.isEmpty()) {
+            log.warn("Orden no encontrada para el evento de notificación ID: {}", notificationEvent.getOrderId());
+            return;
+        }
+
+        Order order = optionalOrder.get();
+
+        // Actualizar el estado de la notificación
+        NotificationStatus status = mapNotificationStatus(notificationEvent.getStatus());
+
+        order.setNotificationStatus(status);
+        orderRepository.save(order);
+        log.info("Estado de la notificación actualizado para la orden ID {}: {}", order.getId(), status);
+    }
+
+    /**
+     * Convierte el estado recibido como cadena (String) en un valor enumerado ({@link NotificationStatus}).
+     *
+     * @param status el estado recibido como cadena (generalmente desde un evento).
+     *               Este valor no debe ser {@code null} y se espera que sea insensible a mayúsculas/minúsculas.
+     * @return el valor correspondiente de {@link NotificationStatus}, o {@code NotificationStatus.PENDING}
+     *         si el estado proporcionado no es reconocido.
+     */
+    private NotificationStatus mapNotificationStatus(String status) {
+        switch (status.toUpperCase()) {
+            case "SUCCESS":
+                return NotificationStatus.SENT;
+            case "FAILED":
+                return NotificationStatus.FAILED;
+            default:
+                log.warn("Estado de notificación desconocido: {}", status);
+                return NotificationStatus.PENDING;
         }
     }
 }

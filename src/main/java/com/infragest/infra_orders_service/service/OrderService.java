@@ -1,6 +1,7 @@
 package com.infragest.infra_orders_service.service;
 
 import com.infragest.infra_orders_service.enums.OrderState;
+import com.infragest.infra_orders_service.event.NotificationEvent;
 import com.infragest.infra_orders_service.model.OrderRq;
 import com.infragest.infra_orders_service.model.OrderRs;
 
@@ -70,4 +71,10 @@ public interface OrderService {
      */
     List<OrderRs> findByEquipmentId(UUID equipmentId);
 
+    /**
+     * Actualiza el estado de la notificación en las órdenes.
+     *
+     * @param notificationEvent evento que contiene los detalles de la confirmación de notificación.
+     */
+    void updateOrderNotificationStatus(NotificationEvent notificationEvent);
 }
