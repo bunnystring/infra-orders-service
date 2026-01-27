@@ -3,6 +3,7 @@ package com.infragest.infra_orders_service.service.impl;
 import com.infragest.infra_orders_service.client.DevicesClient;
 import com.infragest.infra_orders_service.client.EmployeeClient;
 import com.infragest.infra_orders_service.client.GroupClient;
+import com.infragest.infra_orders_service.config.RabbitMQConfig;
 import com.infragest.infra_orders_service.entity.Order;
 import com.infragest.infra_orders_service.entity.OrderItem;
 import com.infragest.infra_orders_service.enums.AssigneeType;
@@ -18,6 +19,7 @@ import com.infragest.infra_orders_service.service.OrderService;
 import com.infragest.infra_orders_service.util.MessageException;
 import feign.FeignException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -64,7 +66,7 @@ public class OrderServiceImpl implements OrderService {
     /**
      * Inyección de dependencia: RabbitTemplate
      */
-    // private final RabbitTemplate rabbitTemplate;
+    private final RabbitTemplate rabbitTemplate;
 
 
     public OrderServiceImpl(
@@ -72,8 +74,8 @@ public class OrderServiceImpl implements OrderService {
             OrderItemRepository orderItemRepository,
             DevicesClient devicesClient,
             GroupClient groupClient,
-            EmployeeClient employeeClient
-            // RabbitTemplate rabbitTemplate,
+            EmployeeClient employeeClient,
+            RabbitTemplate rabbitTemplate
         )
     {
         this.orderRepository = orderRepository;
@@ -81,7 +83,7 @@ public class OrderServiceImpl implements OrderService {
         this.devicesClient = devicesClient;
         this.groupClient = groupClient;
         this.employeeClient = employeeClient;
-       // this.rabbitTemplate = rabbitTemplate;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
     @Override
@@ -100,7 +102,7 @@ public class OrderServiceImpl implements OrderService {
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
 
         // Publicar el evento
-        //publishOrderCreatedEvent(savedOrder);
+        publishOrderCreatedEvent(savedOrder);
 
         // Mapear y devolver la orden como DTO
         return toOrderRs(savedOrder);
@@ -501,18 +503,28 @@ public class OrderServiceImpl implements OrderService {
                 .description(order.getDescription())
                 .assigneeType(order.getAssigneeType() != null ? order.getAssigneeType().name() : null)
                 .assigneeId(order.getAssigneeId())
-                .deviceIds(order.getItems().stream().map(OrderItem::getDeviceId).collect(Collectors.toList()))
+                .deviceIds(order.getItems().stream()
+                        .map(OrderItem::getDeviceId)
+                        .collect(Collectors.toList()))
                 .build();
 
         try {
-            // Enviar el evento a través del RabbitTemplate (u otra dependencia)
-            //rabbitTemplate.convertAndSend("orders.exchange", "order.created", event);
-
-            // Loguear el éxito
-            log.info("Evento OrderCreated publicado: {}", event);
+            // Publicar el evento en el exchange con la routing key
+            log.info("Publicando evento OrderCreated: {}", event);
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.EXCHANGE_NAME,
+                    "order.created",
+                    event
+            );
+            log.info("Evento OrderCreated publicado correctamente para la orden: {}", order.getId());
         } catch (Exception ex) {
-            // Manejar fallos de publicación
-            log.error("Error al publicar el evento OrderCreated para la orden {}: {}", order.getId(), ex.getMessage(), ex);
+            // Loguear el fallo, pero asegúrate de manejarlo adecuadamente en otros flujos
+            log.error(
+                    "Error al publicar el evento OrderCreated para la orden {}. Mensaje del error: {}",
+                    order.getId(),
+                    ex.getMessage(),
+                    ex
+            );
         }
     }
 }
