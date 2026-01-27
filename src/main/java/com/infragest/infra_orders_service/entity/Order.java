@@ -2,6 +2,7 @@ package com.infragest.infra_orders_service.entity;
 
 
 import com.infragest.infra_orders_service.enums.AssigneeType;
+import com.infragest.infra_orders_service.enums.NotificationStatus;
 import com.infragest.infra_orders_service.enums.OrderState;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.Size;
@@ -23,7 +24,8 @@ import java.util.UUID;
 @Entity
 @Table(name = "rental_order", indexes = {
         @Index(name = "idx_order_state", columnList = "state"),
-        @Index(name = "idx_order_assignee_id", columnList = "assignee_id")
+        @Index(name = "idx_order_assignee_id", columnList = "assignee_id"),
+        @Index(name = "idx_order_notification_status", columnList = "notification_status")
 })
 @Data
 @NoArgsConstructor
@@ -69,6 +71,14 @@ public class Order extends BaseEntity{
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @Builder.Default
     private List<OrderItem> items = new ArrayList<>();
+
+    /**
+     * Estado de la notificación asociada a la orden.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "notification_status", length = 20, nullable = false)
+    @Builder.Default
+    private NotificationStatus notificationStatus = NotificationStatus.PENDING;
 
     /**
      * Callback JPA que se ejecuta antes de persistir la entidad.

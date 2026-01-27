@@ -8,6 +8,13 @@ import org.springframework.web.bind.annotation.PathVariable;
 import java.util.Map;
 import java.util.UUID;
 
+
+/**
+ * Feign client para comunicarse con los endpoints de empleados en infra-groups-service.
+ *
+ * @author bunnystring
+ * @since 2026-01-19
+ */
 @FeignClient(name = "infra-groups-service", contextId = "employeeClient", configuration = FeignClientConfig.class)
 public interface EmployeeClient {
 
