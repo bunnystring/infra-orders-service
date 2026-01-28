@@ -101,10 +101,11 @@ public class OrderServiceImpl implements OrderService {
         // Crear la orden y guardar los datos
         Order savedOrder = saveOrderAndItems(rq, originalStates);
 
+        // Obtener los correos asociados a la asignación
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
 
         // Publicar el evento
-        publishOrderCreatedEvent(savedOrder);
+        publishOrderCreatedEvent(savedOrder, recipients);
 
         // Mapear y devolver la orden como DTO
         return toOrderRs(savedOrder);
@@ -198,16 +199,30 @@ public class OrderServiceImpl implements OrderService {
 
         try {
             // Validar el tipo de assignee
+            List<String> recipients;
+
+            // Validar el tipo de assignee
             if (assigneeType == AssigneeType.GROUP) {
-                return validateGroupAndEmails(assigneeId);
+                recipients = validateGroupAndEmails(assigneeId);
             } else if (assigneeType == AssigneeType.EMPLOYEE) {
-                return validateEmployeeAndEmail(assigneeId);
+                recipients = validateEmployeeAndEmail(assigneeId);
             } else {
                 throw new OrderException(
                         String.format("El tipo de assignation '%s' no es válido.", assigneeType),
                         OrderException.Type.BAD_REQUEST
                 );
             }
+
+            // Verificar que la lista de correos no sea nula ni vacía
+            if (recipients == null || recipients.isEmpty()) {
+                throw new OrderException(
+                        String.format("No se encontraron correos electrónicos para el assignee con ID: %s y tipo: %s",
+                                assigneeId, assigneeType),
+                        OrderException.Type.NOT_FOUND
+                );
+            }
+
+            return recipients;
         } catch (FeignException fe) {
             log.error("Error comunicándose con infra-groups-service para assignee {}: {}", assigneeId, fe.getMessage(), fe);
             throw new OrderException(
@@ -508,7 +523,7 @@ public class OrderServiceImpl implements OrderService {
      *
      * @param order La entidad Order recién guardada en la base de datos.
      */
-    private void publishOrderCreatedEvent(Order order) {
+    private void publishOrderCreatedEvent(Order order, List<String> recipients) {
         // Construir el objeto del evento
         OrderEvent event = OrderEvent.builder()
                 .orderId(order.getId())
@@ -519,6 +534,7 @@ public class OrderServiceImpl implements OrderService {
                 .deviceIds(order.getItems().stream()
                         .map(OrderItem::getDeviceId)
                         .collect(Collectors.toList()))
+                .recipientEmails(recipients)
                 .build();
 
         try {
