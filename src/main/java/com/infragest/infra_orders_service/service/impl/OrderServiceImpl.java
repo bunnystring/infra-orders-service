@@ -70,7 +70,16 @@ public class OrderServiceImpl implements OrderService {
      */
     private final RabbitTemplate rabbitTemplate;
 
-
+    /**
+     * Constructor con los parametros iniciales.
+     *
+     * @param orderRepository
+     * @param orderItemRepository
+     * @param devicesClient
+     * @param groupClient
+     * @param employeeClient
+     * @param rabbitTemplate
+     */
     public OrderServiceImpl(
             OrderRepository orderRepository,
             OrderItemRepository orderItemRepository,
@@ -88,6 +97,16 @@ public class OrderServiceImpl implements OrderService {
         this.rabbitTemplate = rabbitTemplate;
     }
 
+    /**
+     * Crea una nueva orden a partir de la solicitud proporcionada.
+     *
+     * @param rq Objeto de solicitud que contiene la información necesaria para crear la orden.
+     *           Incluye dispositivos, tipos de asignación (`assigneeType`), e identificadores de asignación (`assigneeId`).
+     * @return DTO que representa la orden creada.
+     * @throws OrderException Si ocurre un error durante la verificación de dispositivos, la validación de destinatarios o la creación de la orden.
+     * @since 2026-01-28
+     * @author Bunnystring
+     */
     @Override
     @Transactional
     public OrderRs createOrder(OrderRq rq) {
@@ -101,10 +120,11 @@ public class OrderServiceImpl implements OrderService {
         // Crear la orden y guardar los datos
         Order savedOrder = saveOrderAndItems(rq, originalStates);
 
+        // Obtener los correos asociados a la asignación
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
 
         // Publicar el evento
-        publishOrderCreatedEvent(savedOrder);
+        publishOrderCreatedEvent(savedOrder, recipients);
 
         // Mapear y devolver la orden como DTO
         return toOrderRs(savedOrder);
@@ -198,16 +218,30 @@ public class OrderServiceImpl implements OrderService {
 
         try {
             // Validar el tipo de assignee
+            List<String> recipients;
+
+            // Validar el tipo de assignee
             if (assigneeType == AssigneeType.GROUP) {
-                return validateGroupAndEmails(assigneeId);
+                recipients = validateGroupAndEmails(assigneeId);
             } else if (assigneeType == AssigneeType.EMPLOYEE) {
-                return validateEmployeeAndEmail(assigneeId);
+                recipients = validateEmployeeAndEmail(assigneeId);
             } else {
                 throw new OrderException(
                         String.format("El tipo de assignation '%s' no es válido.", assigneeType),
                         OrderException.Type.BAD_REQUEST
                 );
             }
+
+            // Verificar que la lista de correos no sea nula ni vacía
+            if (recipients == null || recipients.isEmpty()) {
+                throw new OrderException(
+                        String.format("No se encontraron correos electrónicos para el assignee con ID: %s y tipo: %s",
+                                assigneeId, assigneeType),
+                        OrderException.Type.NOT_FOUND
+                );
+            }
+
+            return recipients;
         } catch (FeignException fe) {
             log.error("Error comunicándose con infra-groups-service para assignee {}: {}", assigneeId, fe.getMessage(), fe);
             throw new OrderException(
@@ -508,7 +542,7 @@ public class OrderServiceImpl implements OrderService {
      *
      * @param order La entidad Order recién guardada en la base de datos.
      */
-    private void publishOrderCreatedEvent(Order order) {
+    private void publishOrderCreatedEvent(Order order, List<String> recipients) {
         // Construir el objeto del evento
         OrderEvent event = OrderEvent.builder()
                 .orderId(order.getId())
@@ -519,6 +553,7 @@ public class OrderServiceImpl implements OrderService {
                 .deviceIds(order.getItems().stream()
                         .map(OrderItem::getDeviceId)
                         .collect(Collectors.toList()))
+                .recipientEmails(recipients)
                 .build();
 
         try {
