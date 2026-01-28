@@ -70,7 +70,16 @@ public class OrderServiceImpl implements OrderService {
      */
     private final RabbitTemplate rabbitTemplate;
 
-
+    /**
+     * Constructor con los parametros iniciales.
+     *
+     * @param orderRepository
+     * @param orderItemRepository
+     * @param devicesClient
+     * @param groupClient
+     * @param employeeClient
+     * @param rabbitTemplate
+     */
     public OrderServiceImpl(
             OrderRepository orderRepository,
             OrderItemRepository orderItemRepository,
@@ -88,6 +97,16 @@ public class OrderServiceImpl implements OrderService {
         this.rabbitTemplate = rabbitTemplate;
     }
 
+    /**
+     * Crea una nueva orden a partir de la solicitud proporcionada.
+     *
+     * @param rq Objeto de solicitud que contiene la información necesaria para crear la orden.
+     *           Incluye dispositivos, tipos de asignación (`assigneeType`), e identificadores de asignación (`assigneeId`).
+     * @return DTO que representa la orden creada.
+     * @throws OrderException Si ocurre un error durante la verificación de dispositivos, la validación de destinatarios o la creación de la orden.
+     * @since 2026-01-28
+     * @author Bunnystring
+     */
     @Override
     @Transactional
     public OrderRs createOrder(OrderRq rq) {
