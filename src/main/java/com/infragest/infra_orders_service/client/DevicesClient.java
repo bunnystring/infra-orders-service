@@ -4,6 +4,7 @@ import com.infragest.infra_orders_service.config.FeignClientConfig;
 import com.infragest.infra_orders_service.model.ApiResponseDto;
 import com.infragest.infra_orders_service.model.DeviceRs;
 import com.infragest.infra_orders_service.model.DevicesBatchRq;
+import com.infragest.infra_orders_service.model.RestoreDevicesRq;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -42,8 +43,9 @@ public interface DevicesClient {
     /**
      * Restaura los estados originales de devices (usado al finalizar una orden).
      *
-     * @return mapa con "success" y opcional "message"
+     * @param restoreDevicesRq solicitud con los dispositivos y estados originales
+     * @return respuesta con el estado de la operación
      */
     @PostMapping("/api/devices/restore")
-    Map<String, Object> restoreDeviceStates(@RequestBody Map<String, Object> body);
+    Map<String, Object> restoreDeviceStates(@RequestBody RestoreDevicesRq restoreDevicesRq);
 }
