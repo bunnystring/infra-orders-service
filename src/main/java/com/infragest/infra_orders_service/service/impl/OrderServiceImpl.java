@@ -1,5 +1,6 @@
 package com.infragest.infra_orders_service.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.infragest.infra_orders_service.client.DevicesClient;
 import com.infragest.infra_orders_service.client.EmployeeClient;
 import com.infragest.infra_orders_service.client.GroupClient;
@@ -114,11 +115,11 @@ public class OrderServiceImpl implements OrderService {
         // Verificar dispositivos y obtener su estado original
         Map<UUID, String> originalStates = verifyDevicesAndFetchState(rq.getDevicesIds());
 
-        // Reservar dispositivos
-        reserveDevices(rq.getDevicesIds());
-
         // Crear la orden y guardar los datos
         Order savedOrder = saveOrderAndItems(rq, originalStates);
+
+        // Reservar dispositivos
+        reserveDevices(rq.getDevicesIds(), savedOrder.getId());
 
         // Obtener los correos asociados a la asignación
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
@@ -158,7 +159,7 @@ public class OrderServiceImpl implements OrderService {
     public OrderRs getOrder(UUID id) {
         Order order = orderRepository.findById(id)
                 .orElseThrow(() -> new OrderException(
-                        String.format("Orden no encontrada con ID: %s", id),
+                        String.format(MessageException.ORDER_NOT_FOUND, id),
                         OrderException.Type.NOT_FOUND));
         return toOrderRs(order);
     }
@@ -227,7 +228,7 @@ public class OrderServiceImpl implements OrderService {
                 recipients = validateEmployeeAndEmail(assigneeId);
             } else {
                 throw new OrderException(
-                        String.format("El tipo de assignation '%s' no es válido.", assigneeType),
+                        String.format(MessageException.ASSIGNEE_INVALID, assigneeType),
                         OrderException.Type.BAD_REQUEST
                 );
             }
@@ -235,18 +236,24 @@ public class OrderServiceImpl implements OrderService {
             // Verificar que la lista de correos no sea nula ni vacía
             if (recipients == null || recipients.isEmpty()) {
                 throw new OrderException(
-                        String.format("No se encontraron correos electrónicos para el assignee con ID: %s y tipo: %s",
+                        String.format(MessageException.ASSIGNEE_NOT_FOUND,
                                 assigneeId, assigneeType),
                         OrderException.Type.NOT_FOUND
                 );
             }
 
             return recipients;
-        } catch (FeignException fe) {
+        } catch (FeignException.ServiceUnavailable fe) {
             log.error("Error comunicándose con infra-groups-service para assignee {}: {}", assigneeId, fe.getMessage(), fe);
             throw new OrderException(
                     MessageException.DEPENDENCY_ERROR,
                     OrderException.Type.INTERNAL_SERVER
+            );
+        } catch (FeignException fe) {
+            log.error("Error al obtener los correos: {}", fe.getMessage());
+            throw new DeviceUnavailableException(
+                    extractFeignErrorMessage(fe, MessageException.DEPENDENCY_ERROR),
+                    DeviceUnavailableException.Type.INTERNAL_SERVER
             );
         }
     }
@@ -259,6 +266,15 @@ public class OrderServiceImpl implements OrderService {
      * @throws OrderException Si el grupo no existe o no tiene miembros con correos válidos.
      */
     private List<String> validateGroupAndEmails(UUID groupId) {
+
+        // Validar que groupId no sea null
+        if (groupId == null) {
+            throw new OrderException(
+                    String.format(MessageException.MISSING_PARAMETER, "groupId"),
+                    OrderException.Type.BAD_REQUEST
+            );
+        }
+
         Map<String, Object> group;
 
         // Consultar la existencia del grupo
@@ -266,13 +282,16 @@ public class OrderServiceImpl implements OrderService {
             // Consultar la existencia del grupo a través del cliente Feign
            group = groupClient.getGroup(groupId);
 
-        } catch (FeignException fe) {
-            // Loguea el error de comunicación con el microservicio de grupos
+        } catch (FeignException.ServiceUnavailable fe) {
             log.error("Error comunicándose con el servicio de grupos: {}", fe.getMessage());
-
-            // Lanza una excepción personalizada para el servicio de grupos
             throw new GroupUnavailableExcepction(
-                    "Error al comunicarse con el servicio de grupos.",
+                    MessageException.SERVICE_UNAVAILABLE,
+                    GroupUnavailableExcepction.Type.INTERNAL_SERVER
+            );
+        } catch (FeignException fe) {
+            log.error("Error inesperado comunicándose con el servicio de grupos: {}", fe.getMessage());
+            throw new GroupUnavailableExcepction(
+                    MessageException.DEPENDENCY_ERROR,
                     GroupUnavailableExcepction.Type.INTERNAL_SERVER
             );
         }
@@ -290,13 +309,18 @@ public class OrderServiceImpl implements OrderService {
             // Obtener los correos de los miembros desde el servicio de grupos
             emails = groupClient.getGroupMembersEmails(groupId);
 
-        } catch (FeignException fe) {
+        } catch (FeignException.ServiceUnavailable fe) {
             // Loguea el error de comunicación con el microservicio de grupos
             log.error("Error comunicándose con el servicio de grupos al obtener miembros: {}", fe.getMessage());
-
             // Lanza una excepción personalizada en caso de error
             throw new GroupUnavailableExcepction(
-                    "Error al comunicarse con el servicio de grupos al intentar obtener miembros.",
+                    MessageException.SERVICE_UNAVAILABLE,
+                    GroupUnavailableExcepction.Type.INTERNAL_SERVER
+            );
+        } catch (FeignException fe) {
+            log.error("Inesperado error comunicándose con el servicio de grupos al obtener miembros {}: {}", groupId, fe.getMessage());
+            throw new GroupUnavailableExcepction(
+                    MessageException.DEPENDENCY_ERROR,
                     GroupUnavailableExcepction.Type.INTERNAL_SERVER
             );
         }
@@ -427,10 +451,26 @@ public class OrderServiceImpl implements OrderService {
 
             // Llama al servicio de dispositivos para obtener sus estados
             devices = devicesClient.getDevicesByIds(devicesBatchRq);
-        } catch (FeignException fe) {
-            log.error("Error comunicándose con el servicio de dispositivos: {}", fe.getMessage());
+
+        } catch (FeignException.ServiceUnavailable fe) {
+            log.error("El servicio de dispositivos no está disponible: {}", fe.getMessage());
             throw new DeviceUnavailableException(
-                    "Error al comunicarse con el servicio de dispositivos.",
+                    MessageException.SERVICE_UNAVAILABLE,
+                    DeviceUnavailableException.Type.SERVICE_UNAVAILABLE
+            );
+
+        } catch (FeignException.BadRequest fe) {
+            log.error("Error en la solicitud al servicio de dispositivos: {}", fe.getMessage());
+            throw new DeviceUnavailableException(
+                    MessageException.INVALID_REQUEST,
+                    DeviceUnavailableException.Type.BAD_REQUEST
+            );
+
+        } catch (FeignException fe) {
+            log.error("Error de comunicación con el servicio de dispositivos: {}", fe.getMessage());
+            // Extraer detalles del mensaje de error del cuerpo de la respuesta
+            throw new DeviceUnavailableException(
+                    extractFeignErrorMessage(fe, MessageException.DEVICE_ERROR_COMMUNICATION),
                     DeviceUnavailableException.Type.INTERNAL_SERVER
             );
         }
@@ -438,7 +478,7 @@ public class OrderServiceImpl implements OrderService {
         // Validar que todos los dispositivos existan en la respuesta
         if (devices == null || devices.size() != deviceIds.size()) {
             throw new DeviceUnavailableException(
-                    String.format("Algunos dispositivos no se encontraron: %s", deviceIds),
+                    String.format(MessageException.DEVICE_NOT_FOUND_BY_IDS,  deviceIds),
                     DeviceUnavailableException.Type.NOT_FOUND
             );
         }
@@ -465,7 +505,7 @@ public class OrderServiceImpl implements OrderService {
         // Lanzar excepción si hay dispositivos no disponibles
         if (!unavailableDevices.isEmpty()) {
             throw new DeviceUnavailableException(
-                    String.format("Los dispositivos no están disponibles: %s", unavailableDevices),
+                    String.format(MessageException.EQUIPMENT_NOT_AVAILABLE, unavailableDevices),
                     DeviceUnavailableException.Type.CONFLICT
             );
         }
@@ -481,8 +521,8 @@ public class OrderServiceImpl implements OrderService {
      * @throws DeviceUnavailableException La respuesta del servicio indica que los dispositivos no pudieron ser reservados.
      * Ocurre un error de comunicación con el servicio `devices`.
      */
-    private void reserveDevices(List<UUID> deviceIds) {
-        Map<String, Object> reserveRequest = Map.of("deviceIds", deviceIds, "state", "OCCUPIED");
+    private void reserveDevices(List<UUID> deviceIds, UUID orderId) {
+        Map<String, Object> reserveRequest = Map.of("deviceIds", deviceIds, "state", "OCCUPIED","orderId", orderId);
         try {
             ApiResponseDto<Void> response = devicesClient.reserveDevices(reserveRequest);
 
@@ -491,10 +531,17 @@ public class OrderServiceImpl implements OrderService {
                 throw new DeviceUnavailableException(response.getMessage(), DeviceUnavailableException.Type.CONFLICT);
             }
 
+        } catch (FeignException.ServiceUnavailable ex) {
+            // Si el microservicio devuelve un 503
+            log.error("El servicio de dispositivos no está disponible: {}", ex.getMessage());
+            throw new DeviceUnavailableException(
+                    MessageException.SERVICE_UNAVAILABLE,
+                    DeviceUnavailableException.Type.SERVICE_UNAVAILABLE
+            );
         } catch (FeignException fe) {
             log.error("Error al reservar dispositivos: {}", fe.getMessage());
             throw new DeviceUnavailableException(
-                    "Error al comunicarse con el servicio de dispositivos.",
+                    extractFeignErrorMessage(fe, MessageException.DEVICE_ERROR_COMMUNICATION),
                     DeviceUnavailableException.Type.INTERNAL_SERVER
             );
         }
@@ -620,6 +667,23 @@ public class OrderServiceImpl implements OrderService {
             default:
                 log.warn("Estado de notificación desconocido: {}", status);
                 return NotificationStatus.PENDING;
+        }
+    }
+
+    /**
+     * Extrae el mensaje detallado de error del cuerpo de un FeignException.
+     *
+     * @param fe El FeignException capturado.
+     * @return El mensaje de error extraído del cuerpo de la excepción, o un mensaje genérico si no se puede procesar.
+     */
+    private String extractFeignErrorMessage(FeignException fe, String defaultMessage) {
+        try {
+            String responseBody = fe.contentUTF8();
+            ObjectMapper objectMapper = new ObjectMapper();
+            Map<String, Object> errorResponse = objectMapper.readValue(responseBody, Map.class);
+            return (String) errorResponse.getOrDefault("message", defaultMessage);
+        } catch (Exception ex) {
+            return defaultMessage;
         }
     }
 }

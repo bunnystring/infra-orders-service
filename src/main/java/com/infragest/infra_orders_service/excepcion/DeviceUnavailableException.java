@@ -8,7 +8,9 @@ public class DeviceUnavailableException extends RuntimeException {
     public enum Type {
     NOT_FOUND,
     BAD_REQUEST,
-    CONFLICT, INTERNAL_SERVER
+    CONFLICT,
+    INTERNAL_SERVER,
+    SERVICE_UNAVAILABLE
     }
 
     /**
