@@ -6,7 +6,6 @@ import com.infragest.infra_orders_service.model.OrderRq;
 import com.infragest.infra_orders_service.model.OrderRs;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 /**

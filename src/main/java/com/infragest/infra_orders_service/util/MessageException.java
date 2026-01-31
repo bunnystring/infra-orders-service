@@ -10,39 +10,41 @@ public abstract class MessageException {
 
     private MessageException() {}
 
-    // Ordenes
-    public static final String ORDER_NOT_FOUND = "Orden no encontrada: %s";
-    public static final String ORDER_CREATE_FAILED = "No se pudo crear la orden: %s";
-    public static final String ORDER_STATE_TRANSITION_INVALID = "Transición de estado inválida para la orden %s: %s";
-    public static final String ORDER_ALREADY_FINALIZED = "La orden %s ya está finalizada";
+    // Orders
+    public static final String SERVICE_UNAVAILABLE = "The service is currently unavailable.";
+    public static final String ORDER_NOT_FOUND = "Order not found: %s";
+    public static final String ORDER_CREATE_FAILED = "Failed to create the order: %s";
+    public static final String ORDER_STATE_TRANSITION_INVALID = "Invalid state transition for order %s: %s";
+    public static final String ORDER_ALREADY_FINALIZED = "Order %s is already finalized";
 
-    // Equipos / Devices
-    public static final String EQUIPMENT_NOT_FOUND = "Equipo no encontrado: %s";
-    public static final String EQUIPMENT_NOT_AVAILABLE = "Los siguientes equipos no están disponibles: %s";
-    public static final String EQUIPMENT_RESERVE_FAILED = "No se pudieron reservar los equipos: %s";
-    public static final String EQUIPMENT_RESTORE_FAILED = "No se pudieron restaurar los estados de los equipos: %s";
-    public static final String INVALID_EQUIPMENT_LIST = "Lista de equipos inválida";
+    // Devices / Equipment
+    public static final String DEVICE_ERROR_COMMUNICATION = "Error communicating with the devices service.";
+    public static final String EQUIPMENT_NOT_FOUND = "Equipment not found: %s";
+    public static final String EQUIPMENT_NOT_AVAILABLE = "The following equipment is not available: %s";
+    public static final String EQUIPMENT_RESERVE_FAILED = "Failed to reserve the equipment: %s";
+    public static final String EQUIPMENT_RESTORE_FAILED = "Failed to restore the state of the equipment: %s";
+    public static final String INVALID_EQUIPMENT_LIST = "Invalid equipment list";
+    public static final String DEVICE_NOT_FOUND_BY_IDS = "";
 
     // Assignee (employee / group)
-    public static final String ASSIGNEE_REQUIRED = "El assignee (tipo e id) es requerido";
-    public static final String ASSIGNEE_NOT_FOUND = "Assignee no encontrado: %s";
-    public static final String ASSIGNEE_INVALID = "Assignee inválido o en estado no permitido: %s";
-    public static final String GROUP_NO_MEMBERS = "El grupo %s no tiene miembros con email";
-    public static final String EMPLOYEE_NOT_ACTIVE = "El empleado %s no está activo";
-    public static final String EMPLOYEE_NO_EMAIL = "El empleado %s no tiene email registrado";
-    public static final String GROUP_NOT_FOUND = "El grupo %s no fue encontrado.";
-    public static final String EMPLOYEE_INACTIVE = "El empleado %s no está activo.";
-    public static final String EMPLOYEE_NOT_FOUND = "El empleado %s no fue encontrado.";
+    public static final String ASSIGNEE_REQUIRED = "The assignee (type and ID) is required";
+    public static final String ASSIGNEE_NOT_FOUND = "Assignee not found: %s";
+    public static final String ASSIGNEE_INVALID = "Invalid or disallowed assignee status: %s";
+    public static final String GROUP_NO_MEMBERS = "Group %s has no members with valid emails";
+    public static final String EMPLOYEE_NOT_ACTIVE = "Employee %s is not active";
+    public static final String EMPLOYEE_NO_EMAIL = "Employee %s has no registered email";
+    public static final String GROUP_NOT_FOUND = "Group %s was not found.";
+    public static final String EMPLOYEE_INACTIVE = "Employee %s is not active.";
+    public static final String EMPLOYEE_NOT_FOUND = "Employee %s was not found.";
 
     // Request / validation / UUID
-    public static final String INVALID_REQUEST = "Request inválido";
-    public static final String INVALID_UUID = "Identificador inválido: %s";
-    public static final String MISSING_PARAMETER = "Falta el parámetro requerido: %s";
+    public static final String INVALID_REQUEST = "Invalid request";
+    public static final String INVALID_UUID = "Invalid identifier: %s";
+    public static final String MISSING_PARAMETER = "Missing required parameter: %s";
 
-    // Operación / permisos / DB / interno
-    public static final String OPERATION_NOT_ALLOWED = "Operación no permitida: %s";
-    public static final String DATABASE_ERROR = "Error en la base de datos";
-    public static final String INTERNAL_ERROR = "Error interno del servidor";
-    public static final String DEPENDENCY_ERROR = "Error al comunicarse con un servicio dependiente.";
-
+    // Operation / permissions / DB / internal
+    public static final String OPERATION_NOT_ALLOWED = "Operation not allowed: %s";
+    public static final String DATABASE_ERROR = "Database error";
+    public static final String INTERNAL_ERROR = "Internal server error";
+    public static final String DEPENDENCY_ERROR = "Error communicating with a dependent service.";
 }
