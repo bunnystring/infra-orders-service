@@ -25,6 +25,7 @@ public abstract class MessageException {
     public static final String EQUIPMENT_RESTORE_FAILED = "Failed to restore the state of the equipment: %s";
     public static final String INVALID_EQUIPMENT_LIST = "Invalid equipment list";
     public static final String DEVICE_NOT_FOUND_BY_IDS = "";
+    public static final String DEVICE_RELEASE_FAILED = "Failed to release devices for order %s.";
 
     // Assignee (employee / group)
     public static final String ASSIGNEE_REQUIRED = "The assignee (type and ID) is required";

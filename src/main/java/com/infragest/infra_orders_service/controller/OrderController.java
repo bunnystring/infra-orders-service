@@ -1,5 +1,6 @@
 package com.infragest.infra_orders_service.controller;
 
+import com.infragest.infra_orders_service.enums.OrderState;
 import com.infragest.infra_orders_service.model.OrderRq;
 import com.infragest.infra_orders_service.model.OrderRs;
 import com.infragest.infra_orders_service.service.OrderService;
@@ -113,5 +114,31 @@ public class OrderController {
     @GetMapping("/{id}")
     public ResponseEntity<OrderRs> getOrderById(@PathVariable UUID id) {
         return ResponseEntity.ok(orderService.getOrder(id));
+    }
+
+    /**
+     * Cambiar el estado de una orden.
+     *
+     * Este endpoint permite actualizar el estado de una orden existente. Valida
+     * que el nuevo estado sea válido y coherente según las reglas del negocio.
+     *
+     * @param orderId UUID único de la orden a actualizar.
+     * @param newState Nuevo estado a asignar a la orden.
+     * @return Una respuesta con el código HTTP 200 (OK) si el estado se actualiza correctamente.
+     */
+    @Operation(summary = "Cambiar estado de una orden", description = "Permite actualizar el estado de una orden existente.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Estado de la orden actualizado con éxito"),
+            @ApiResponse(responseCode = "400", description = "Nuevo estado inválido o transición no permitida"),
+            @ApiResponse(responseCode = "404", description = "La orden no fue encontrada"),
+            @ApiResponse(responseCode = "500", description = "Error interno del servidor")
+    })
+    @PutMapping("/{orderId}/state")
+    public ResponseEntity<Void> updateOrderState(
+            @PathVariable UUID orderId,
+            @RequestParam OrderState newState
+    ) {
+        orderService.changeState(orderId, newState);
+        return ResponseEntity.ok().build();
     }
 }

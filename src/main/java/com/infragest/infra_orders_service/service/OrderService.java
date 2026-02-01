@@ -52,7 +52,7 @@ public interface OrderService {
      * @return la representación actualizada {@link OrderRs}
      * @throws RuntimeException si la orden no existe o si la transición no es válida
      */
-    OrderRs changeState(UUID orderId, OrderState newState);
+    void changeState(UUID orderId, OrderState newState);
 
     /**
      * Obtiene las órdenes asociadas a un assignee (empleado o grupo).

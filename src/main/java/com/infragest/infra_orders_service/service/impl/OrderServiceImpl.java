@@ -26,6 +26,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -176,9 +177,59 @@ public class OrderServiceImpl implements OrderService {
      * @return la representación actualizada {@link OrderRs}
      * @throws RuntimeException si la orden no existe o si la transición no es válida
      */
+    @Transactional
     @Override
-    public OrderRs changeState(UUID orderId, OrderState newState) {
-        return null;
+    public void changeState(UUID orderId, OrderState newState) {
+
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new OrderException(
+                        String.format(MessageException.ORDER_NOT_FOUND, orderId),
+                        OrderException.Type.NOT_FOUND
+                ));
+
+        List<OrderItem> orderItems = orderItemRepository.findByOrderId(orderId);
+        if (orderItems.isEmpty()) {
+            throw new OrderException(
+                    String.format(MessageException.INVALID_EQUIPMENT_LIST, orderId),
+                    OrderException.Type.BAD_REQUEST
+            );
+        }
+
+        validateStateTransition(order.getState(), newState, orderId);
+
+        order.setState(newState);
+        order.setUpdatedAt(LocalDateTime.now());
+        orderRepository.save(order);
+
+        if (newState == OrderState.IN_PROCESS) {
+            try {
+                // Obtener los IDs de los dispositivos de todos los `OrderItem`
+                List<UUID> deviceIds = orderItems.stream()
+                        .map(OrderItem::getDeviceId)
+                        .toList();
+
+                // Validar los estados de los dispositivos con `verifyDevicesAndFetchState`
+                verifyDevicesAndFetchState(deviceIds);
+                log.info("Todos los dispositivos de la orden {} han sido validados exitosamente.", orderId);
+
+            } catch (DeviceUnavailableException ex) {
+                log.error("Error validando los dispositivos para la orden {}: {}", orderId, ex.getMessage());
+                throw new OrderException(
+                        String.format(MessageException.DEPENDENCY_ERROR),
+                        OrderException.Type.INTERNAL_SERVER
+                );
+            }
+        } else if (newState == OrderState.FINISHED) {
+            try {
+                releaseOrderDevices(order); // Liberar los dispositivos
+            } catch (Exception ex) {
+                log.error("Error liberando dispositivos para la orden {}: {}", orderId, ex.getMessage());
+                throw new OrderException(
+                        String.format(MessageException.EQUIPMENT_RESTORE_FAILED, orderId),
+                        OrderException.Type.INTERNAL_SERVER
+                );
+            }
+        }
     }
 
     /**
@@ -684,6 +735,97 @@ public class OrderServiceImpl implements OrderService {
             return (String) errorResponse.getOrDefault("message", defaultMessage);
         } catch (Exception ex) {
             return defaultMessage;
+        }
+    }
+
+    /**
+     * Valida la transición entre estados de una orden.
+     *
+     * @param currentState Estado actual de la orden.
+     * @param newState Nuevo estado al cual se desea actualizar la orden.
+     * @param orderId ID de la orden (para mayor contexto en excepciones).
+     */
+    private void validateStateTransition(OrderState currentState, OrderState newState, UUID orderId) {
+        if (currentState == OrderState.CREATED && newState == OrderState.IN_PROCESS) {
+            return;
+        } else if (currentState == OrderState.IN_PROCESS && newState == OrderState.DISPATCHED) {
+            return;
+        } else if (currentState == OrderState.DISPATCHED && newState == OrderState.FINISHED) {
+            return;
+        }
+        throw new OrderException(
+                String.format(MessageException.ORDER_STATE_TRANSITION_INVALID, orderId, currentState + " -> " + newState),
+                OrderException.Type.BAD_REQUEST
+        );
+    }
+
+    /**
+     * Libera los dispositivos asociados a una orden y restaura sus estados originales.
+     *
+     * @param order Orden cuyo estado se debe finalizar. Debe incluir los `OrderItem` asociados con el `deviceId` y su estado original.
+     * @throws DeviceUnavailableException si ocurre un problema al comunicarse con el servicio `devices`.
+     */
+    private void releaseOrderDevices(Order order) {
+
+        // Construir la lista de items necesarios para el DTO del request
+        List<RestoreDevicesRq.RestoreItem> restoreItems = order.getItems().stream()
+                .map(item -> RestoreDevicesRq.RestoreItem.builder()
+                        .deviceId(item.getDeviceId())
+                        .state(DeviceStatusEnum.valueOf(item.getOriginalDeviceState()))
+                        .build())
+                .toList();
+
+        // Validar que haya elementos en la lista antes de continuar
+        if (restoreItems.isEmpty()) {
+            log.warn("No hay dispositivos asociados para restaurar en la orden {}", order.getId());
+            throw new OrderException(
+                    String.format(MessageException.INVALID_EQUIPMENT_LIST, order.getId()),
+                    OrderException.Type.BAD_REQUEST
+            );
+        }
+
+        // Crear la solicitud DTO para enviar al endpoint de restore
+        RestoreDevicesRq restoreDevicesRq = RestoreDevicesRq.builder()
+                .items(restoreItems)
+                .build();
+
+        log.info("Ejecutando la restauración de dispositivos para la orden {}: {}", order.getId(), restoreDevicesRq);
+
+        try {
+            // Llamar al cliente Feign para restaurar los dispositivos
+            Map<String, Object> response = devicesClient.restoreDeviceStates(restoreDevicesRq);
+
+            // Validar la respuesta del servicio
+            if (response == null || !Boolean.TRUE.equals(response.get("success"))) {
+                String message = (String) response.getOrDefault("message", "La restauración de dispositivos falló sin detalles.");
+                throw new DeviceUnavailableException(
+                        String.format("Fallo en la restauración de dispositivos para la orden %s: %s", order.getId(), message),
+                        DeviceUnavailableException.Type.INTERNAL_SERVER
+                );
+            }
+
+            log.info("Estados originales restaurados para todos los dispositivos de la orden {}", order.getId());
+
+        } catch (FeignException.ServiceUnavailable fe) {
+            log.error("El servicio de dispositivos no está disponible para la orden {}: {}", order.getId(), fe.getMessage());
+            throw new DeviceUnavailableException(
+                    MessageException.SERVICE_UNAVAILABLE,
+                    DeviceUnavailableException.Type.SERVICE_UNAVAILABLE
+            );
+
+        } catch (FeignException.BadRequest fe) {
+            log.error("Solicitud inválida al servicio de dispositivos para la orden {}: {}", order.getId(), fe.getMessage());
+            throw new DeviceUnavailableException(
+                    MessageException.INVALID_REQUEST,
+                    DeviceUnavailableException.Type.BAD_REQUEST
+            );
+
+        } catch (FeignException fe) {
+            log.error("Error de comunicación con el servicio de dispositivos para la orden {}: {}", order.getId(), fe.getMessage());
+            throw new DeviceUnavailableException(
+                    MessageException.DEVICE_ERROR_COMMUNICATION,
+                    DeviceUnavailableException.Type.INTERNAL_SERVER
+            );
         }
     }
 }
