@@ -126,7 +126,7 @@ public class OrderServiceImpl implements OrderService {
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
 
         // Publicar el evento
-        publishOrderCreatedEvent(savedOrder, recipients);
+        publishOrderEvent(savedOrder, recipients);
 
         // Mapear y devolver la orden como DTO
         return toOrderRs(savedOrder);
@@ -145,7 +145,7 @@ public class OrderServiceImpl implements OrderService {
 
         // Mapear entidades Order a DTO OrderRs
         return orders.stream()
-                .map(this::toOrderRs) // Convierte cada entidad a su respectivo DTO
+                .map(this::toOrderRs)
                 .collect(Collectors.toList());
     }
 
@@ -181,12 +181,14 @@ public class OrderServiceImpl implements OrderService {
     @Override
     public void changeState(UUID orderId, OrderState newState) {
 
+        // Validar existencia de la orden
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new OrderException(
                         String.format(MessageException.ORDER_NOT_FOUND, orderId),
                         OrderException.Type.NOT_FOUND
                 ));
 
+        // Validar la existencia de los ítems asociados a la orden
         List<OrderItem> orderItems = orderItemRepository.findByOrderId(orderId);
         if (orderItems.isEmpty()) {
             throw new OrderException(
@@ -195,41 +197,17 @@ public class OrderServiceImpl implements OrderService {
             );
         }
 
+        // Validar transición de estados
         validateStateTransition(order.getState(), newState, orderId);
 
+        // Aplicar el nuevo estado
         order.setState(newState);
         order.setUpdatedAt(LocalDateTime.now());
         orderRepository.save(order);
 
-        if (newState == OrderState.IN_PROCESS) {
-            try {
-                // Obtener los IDs de los dispositivos de todos los `OrderItem`
-                List<UUID> deviceIds = orderItems.stream()
-                        .map(OrderItem::getDeviceId)
-                        .toList();
+        // Ejecutar acciones específicas dependiendo del nuevo estado
+        performStateSpecificActions(order, newState);
 
-                // Validar los estados de los dispositivos con `verifyDevicesAndFetchState`
-                verifyDevicesAndFetchState(deviceIds);
-                log.info("Todos los dispositivos de la orden {} han sido validados exitosamente.", orderId);
-
-            } catch (DeviceUnavailableException ex) {
-                log.error("Error validando los dispositivos para la orden {}: {}", orderId, ex.getMessage());
-                throw new OrderException(
-                        String.format(MessageException.DEPENDENCY_ERROR),
-                        OrderException.Type.INTERNAL_SERVER
-                );
-            }
-        } else if (newState == OrderState.FINISHED) {
-            try {
-                releaseOrderDevices(order); // Liberar los dispositivos
-            } catch (Exception ex) {
-                log.error("Error liberando dispositivos para la orden {}: {}", orderId, ex.getMessage());
-                throw new OrderException(
-                        String.format(MessageException.EQUIPMENT_RESTORE_FAILED, orderId),
-                        OrderException.Type.INTERNAL_SERVER
-                );
-            }
-        }
     }
 
     /**
@@ -328,8 +306,8 @@ public class OrderServiceImpl implements OrderService {
 
         Map<String, Object> group;
 
-        // Consultar la existencia del grupo
         try {
+
             // Consultar la existencia del grupo a través del cliente Feign
            group = groupClient.getGroup(groupId);
 
@@ -640,37 +618,34 @@ public class OrderServiceImpl implements OrderService {
      *
      * @param order La entidad Order recién guardada en la base de datos.
      */
-    private void publishOrderCreatedEvent(Order order, List<String> recipients) {
-        // Construir el objeto del evento
-        OrderEvent event = OrderEvent.builder()
-                .orderId(order.getId())
-                .state(order.getState())
-                .description(order.getDescription())
-                .assigneeType(order.getAssigneeType() != null ? order.getAssigneeType().name() : null)
-                .assigneeId(order.getAssigneeId())
-                .deviceIds(order.getItems().stream()
-                        .map(OrderItem::getDeviceId)
-                        .collect(Collectors.toList()))
-                .recipientEmails(recipients)
-                .build();
+    private void publishOrderEvent(Order order, List<String> recipients) {
 
         try {
-            // Publicar el evento en el exchange con la routing key
-            log.info("Publicando evento OrderCreated: {}", event);
+            // Construcción del evento
+            OrderEvent event = OrderEvent.builder()
+                    .orderId(order.getId())
+                    .state(order.getState())
+                    .description(order.getDescription())
+                    .assigneeType(order.getAssigneeType() != null ? order.getAssigneeType().name() : null)
+                    .assigneeId(order.getAssigneeId())
+                    .deviceIds(order.getItems().stream()
+                            .map(OrderItem::getDeviceId)
+                            .collect(Collectors.toList()))
+                    .recipientEmails(recipients)
+                    .build();
+
+            // Publicar en RabbitMQ
             rabbitTemplate.convertAndSend(
                     RabbitMQConfig.EXCHANGE_NAME,
-                    "order.created",
+                    String.format("order.state.%s", order.getState().name().toLowerCase()),
                     event
             );
-            log.info("Evento OrderCreated publicado correctamente para la orden: {}", order.getId());
+
+            log.info("Evento publicado exitosamente. Orden ID: {}, Estado: {}, Routing Key: {}",
+                    order.getId(), order.getState(), String.format("order.state.%s", order.getState().name().toLowerCase()));
         } catch (Exception ex) {
-            // Loguear el fallo, pero asegúrate de manejarlo adecuadamente en otros flujos
-            log.error(
-                    "Error al publicar el evento OrderCreated para la orden {}. Mensaje del error: {}",
-                    order.getId(),
-                    ex.getMessage(),
-                    ex
-            );
+            log.error("Error al publicar el evento. Orden ID: {}, Routing Key: {}. Detalle: {}",
+                    order.getId(), String.format("order.state.%s", order.getState().name().toLowerCase()), ex.getMessage(), ex);
         }
     }
 
@@ -739,11 +714,12 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * Valida la transición entre estados de una orden.
+     * Válida que la transición de estados sea permitida según las reglas definidas.
      *
      * @param currentState Estado actual de la orden.
-     * @param newState Nuevo estado al cual se desea actualizar la orden.
-     * @param orderId ID de la orden (para mayor contexto en excepciones).
+     * @param newState     Nuevo estado al que se desea actualizar la orden.
+     * @param orderId      UUID de la orden afectada (para contexto en mensajes de error).
+     * @throws OrderException si la transición no es válida.
      */
     private void validateStateTransition(OrderState currentState, OrderState newState, UUID orderId) {
         if (currentState == OrderState.CREATED && newState == OrderState.IN_PROCESS) {
@@ -762,8 +738,11 @@ public class OrderServiceImpl implements OrderService {
     /**
      * Libera los dispositivos asociados a una orden y restaura sus estados originales.
      *
-     * @param order Orden cuyo estado se debe finalizar. Debe incluir los `OrderItem` asociados con el `deviceId` y su estado original.
-     * @throws DeviceUnavailableException si ocurre un problema al comunicarse con el servicio `devices`.
+     * Construye la solicitud de restauración basada en los dispositivos asociados
+     * a la orden y sus estados originales, y la envía al servicio de dispositivos.
+     *
+     * @param order La orden que contiene los dispositivos a liberar.
+     * @throws DeviceUnavailableException si ocurre un error al comunicarse con el servicio de dispositivos.
      */
     private void releaseOrderDevices(Order order) {
 
@@ -825,6 +804,56 @@ public class OrderServiceImpl implements OrderService {
             throw new DeviceUnavailableException(
                     MessageException.DEVICE_ERROR_COMMUNICATION,
                     DeviceUnavailableException.Type.INTERNAL_SERVER
+            );
+        }
+    }
+
+    /**
+     * Ejecuta las acciones específicas para un cambio de estado de una orden.
+     *
+     * Comportamiento:
+     * - Para todos los estados, notifica el cambio a RabbitMQ.
+     * - Para el estado {@link OrderState#FINISHED}, libera los dispositivos asociados a la orden.
+     *
+     * @param order   La entidad {@link Order} afectada.
+     * @param newState El nuevo estado al que se cambia la orden ({@link OrderState}).
+     */
+    private void performStateSpecificActions(Order order, OrderState newState) {
+
+        // Obtener los correos asociados a la asignación
+        List<String> recipients = resolveRecipientsAndValidate(order.getAssigneeType(), order.getAssigneeId());
+
+        // Notificar a RabbitMQ siempre que haya un cambio de estado
+        publishOrderEvent(order, recipients);
+
+        // Ejecución de acciones específicas solo para el estado FINISHED
+        if (newState == OrderState.FINISHED) {
+            handleFinishedState(order);
+        }
+    }
+
+
+    /**
+     * Maneja las acciones específicas para el estado {@link OrderState#FINISHED}.
+     *
+     * Comportamiento:
+     * - Libera los dispositivos asociados a la orden y restaura sus estados originales.
+     *
+     * @param order La entidad {@link Order} cuyo estado está cambiando a {@link OrderState#FINISHED}.
+     * @throws OrderException si ocurre un error en el proceso de liberación de dispositivos.
+     */
+    private void handleFinishedState(Order order) {
+        try {
+
+            // Liberar dispositivos
+            releaseOrderDevices(order);
+            log.info("Se liberaron los dispositivos de la orden {}", order.getId());
+
+        } catch (Exception ex) {
+            log.error("Error al liberar dispositivos de la orden {}: {}", order.getId(), ex.getMessage());
+            throw new OrderException(
+                    String.format(MessageException.EQUIPMENT_RESTORE_FAILED, order.getId()),
+                    OrderException.Type.INTERNAL_SERVER
             );
         }
     }
