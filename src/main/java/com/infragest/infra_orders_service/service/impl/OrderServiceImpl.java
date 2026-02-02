@@ -145,7 +145,7 @@ public class OrderServiceImpl implements OrderService {
 
         // Mapear entidades Order a DTO OrderRs
         return orders.stream()
-                .map(this::toOrderRs) // Convierte cada entidad a su respectivo DTO
+                .map(this::toOrderRs)
                 .collect(Collectors.toList());
     }
 
@@ -854,41 +854,6 @@ public class OrderServiceImpl implements OrderService {
             throw new OrderException(
                     String.format(MessageException.EQUIPMENT_RESTORE_FAILED, order.getId()),
                     OrderException.Type.INTERNAL_SERVER
-            );
-        }
-    }
-
-    /**
-     * Publica un evento en RabbitMQ notificando un cambio de estado de una orden.
-     *
-     * Publica un evento {@link OrderEvent} en el exchange configurado,
-     * incluyendo detalles de la orden y su nuevo estado.
-     *
-     * @param order La entidad {@link Order} que cambió de estado.
-     */
-    private void notifyStateChangeToRabbitMQ(Order order) {
-        try {
-            OrderEvent event = OrderEvent.builder()
-                    .orderId(order.getId())
-                    .state(order.getState())
-                    .description(order.getDescription())
-                    .assigneeType(order.getAssigneeType() != null ? order.getAssigneeType().name() : null)
-                    .assigneeId(order.getAssigneeId())
-                    .deviceIds(order.getItems().stream()
-                            .map(OrderItem::getDeviceId)
-                            .collect(Collectors.toList()))
-                    .build();
-
-            rabbitTemplate.convertAndSend(
-                    RabbitMQConfig.EXCHANGE_NAME,
-                    String.format("order.state.%s", order.getState().name().toLowerCase()),
-                    event
-            );
-            log.info("Evento enviado a RabbitMQ: Orden ID {} Estado {}", order.getId(), order.getState());
-        } catch (Exception ex) {
-            log.error(
-                    "Error al enviar notificación para la orden {}: Estado {}. Detalle: {}",
-                    order.getId(), order.getState(), ex.getMessage()
             );
         }
     }
