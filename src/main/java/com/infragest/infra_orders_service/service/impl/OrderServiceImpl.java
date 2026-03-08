@@ -110,14 +110,20 @@ public class OrderServiceImpl implements OrderService {
      * @author Bunnystring
      */
     @Override
-    @Transactional
     public OrderRs createOrder(OrderRq rq) {
 
+        Order order = saveOrderBase(rq);
+
         // Verificar dispositivos y obtener su estado original
-        Map<UUID, String> originalStates = verifyDevicesAndFetchState(rq.getDevicesIds());
+        Map<UUID, String> originalStates = verifyDevicesAndFetchState(rq.getDevicesIds(), order);
+
+        if (order.getState() == OrderState.CREATED_WITH_ERRORS) {
+            orderRepository.saveAndFlush(order);
+            return toOrderRs(order);
+        }
 
         // Crear la orden y guardar los datos
-        Order savedOrder = saveOrderAndItems(rq, originalStates);
+        Order savedOrder = saveOrderAndItems(order, rq, originalStates);
 
         // Reservar dispositivos
         reserveDevices(rq.getDevicesIds(), savedOrder.getId());
@@ -469,8 +475,11 @@ public class OrderServiceImpl implements OrderService {
      *                                    que no pudieron ser encontrados. El tipo de excepción relacionado
      *                                    se indica en {@link DeviceUnavailableException.Type}.
      */
-    public Map<UUID, String> verifyDevicesAndFetchState(List<UUID> deviceIds) {
-        List<DeviceRs> devices;
+    public Map<UUID, String> verifyDevicesAndFetchState(List<UUID> deviceIds, Order order) {
+        List<DeviceRs> devices = null;
+        String errorMsg = null;
+        String errorType = null;
+
         try {
 
             // Crea un objeto DevicesBatchRq con la lista de ID
@@ -483,36 +492,65 @@ public class OrderServiceImpl implements OrderService {
 
         } catch (FeignException.ServiceUnavailable fe) {
             log.error("El servicio de dispositivos no está disponible: {}", fe.getMessage());
-            throw new DeviceUnavailableException(
-                    MessageException.SERVICE_UNAVAILABLE,
-                    DeviceUnavailableException.Type.SERVICE_UNAVAILABLE
-            );
-
+            errorMsg = fe.getMessage();
+            errorType = "SERVICE_UNAVAILABLE";
         } catch (FeignException.BadRequest fe) {
             log.error("Error en la solicitud al servicio de dispositivos: {}", fe.getMessage());
-            throw new DeviceUnavailableException(
-                    MessageException.INVALID_REQUEST,
-                    DeviceUnavailableException.Type.BAD_REQUEST
-            );
-
+            errorMsg = fe.getMessage();
+            errorType = "BAD_REQUEST";
         } catch (FeignException fe) {
             log.error("Error de comunicación con el servicio de dispositivos: {}", fe.getMessage());
-            // Extraer detalles del mensaje de error del cuerpo de la respuesta
-            throw new DeviceUnavailableException(
-                    extractFeignErrorMessage(fe, MessageException.DEVICE_ERROR_COMMUNICATION),
-                    DeviceUnavailableException.Type.INTERNAL_SERVER
-            );
+            errorMsg = extractFeignErrorMessage(fe, MessageException.DEVICE_ERROR_COMMUNICATION);
+            errorType = "INTERNAL_SERVER";
+        }
+
+        if (errorMsg != null) {
+            order.setState(OrderState.CREATED_WITH_ERRORS);
+            order.setSnapshot(generarSnapshotJson("devices", errorType, errorMsg, deviceIds));
+            return Collections.emptyMap();
         }
 
         // Validar que todos los dispositivos existan en la respuesta
-        if (devices == null || devices.size() != deviceIds.size()) {
+        /*if (devices == null || devices.size() != deviceIds.size()) {
             throw new DeviceUnavailableException(
                     String.format(MessageException.DEVICE_NOT_FOUND_BY_IDS,  deviceIds),
                     DeviceUnavailableException.Type.NOT_FOUND
             );
+        }*/
+
+        if (devices == null || devices.size() != deviceIds.size()) {
+            // Encontrados < requeridos: lista de devices no integrados
+            List<DeviceRs> finalDevices = devices;
+            List<UUID> notFound =
+                    deviceIds.stream()
+                            .filter(id -> finalDevices == null || finalDevices.stream().noneMatch(d -> d.getId().equals(id)))
+                            .toList();
+
+            order.setState(OrderState.CREATED_WITH_ERRORS);
+            order.setSnapshot(generarSnapshotJson(
+                    "devices",
+                    "NOT_FOUND",
+                    "No se encontraron todos los dispositivos: ids=" + notFound,
+                    notFound));
+            return Collections.emptyMap();
         }
 
         return processDeviceStates(devices);
+    }
+
+    // Método de utilidad para crear el snapshot JSON
+    private String generarSnapshotJson(String service, String type, String message, List<UUID> deviceIds) {
+        try {
+            Map<String, Object> snap = new HashMap<>();
+            snap.put("service", service);
+            snap.put("type", type);
+            snap.put("message", message);
+            snap.put("timestamp", java.time.Instant.now().toString());
+            snap.put("deviceIds", deviceIds);
+            return new ObjectMapper().writeValueAsString(snap);
+        } catch (Exception ex) {
+            return service + ": " + type + " - " + message + " | deviceIds: " + deviceIds;
+        }
     }
 
     private Map<UUID, String> processDeviceStates(List<DeviceRs> devices) {
@@ -586,31 +624,44 @@ public class OrderServiceImpl implements OrderService {
      *                       Si un dispositivo no tiene un estado en este mapa, se usará "UNKNOWN" como valor predeterminado.
      * @return La entidad {@link Order} recién creada y persistida en la base de datos.
      */
-    private Order saveOrderAndItems(OrderRq rq, Map<UUID, String> originalStates) {
+    private Order saveOrderAndItems(Order order, OrderRq rq, Map<UUID, String> originalStates) {
 
-        // Crear la entidad Order
-        Order order = Order.builder()
-                .description(rq.getDescription())
-                .state(OrderState.CREATED)
-                .assigneeType(rq.getAssigneeType())
-                .assigneeId(rq.getAssigneeId())
-                .build();
+        order.setAssigneeType(rq.getAssigneeType());
+        order.setAssigneeId(rq.getAssigneeId());
 
-        // Crear los items de la orden basados en los deviceIds
-        List<OrderItem> items = rq.getDevicesIds().stream()
+        List<UUID> deviceIds = rq.getDevicesIds();
+        List<OrderItem> items = deviceIds.stream()
                 .map(deviceId -> OrderItem.builder()
-                        .order(order)
-                        .deviceId(deviceId)
-                        .originalDeviceState(originalStates.getOrDefault(deviceId, "UNKNOWN")) // Estado original del dispositivo
-                        .build()
-                )
+                                .order(order)
+                                .deviceId(deviceId)
+                        .originalDeviceState(originalStates.getOrDefault(deviceId, "UNKNOWN"))
+                        .build())
                 .collect(Collectors.toList());
 
+
         // Asociar los items creados con la entidad Order
-        order.setItems(items);
+        order.getItems().clear();
+        order.getItems().addAll(items);
 
         // Guardar la entidad Order (con los items) en la base de datos
         return orderRepository.saveAndFlush(order);
+    }
+
+    /**
+     * Crea la base de la orden.
+     * @param rq
+     * @return
+     */
+    private Order saveOrderBase(OrderRq rq) {
+
+        // Crear la entidad Order Base
+        Order order = Order.builder()
+                .description(rq.getDescription())
+                .state(OrderState.CREATED)
+                .notificationStatus(NotificationStatus.PENDING)
+                .build();
+
+        return orderRepository.save(order);
     }
 
     /**
