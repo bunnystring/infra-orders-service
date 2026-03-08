@@ -81,6 +81,13 @@ public class Order extends BaseEntity{
     private NotificationStatus notificationStatus = NotificationStatus.PENDING;
 
     /**
+     * Campo para almacenar un snapshot JSON o mensaje textual de los errores o el log de integración
+     * con los microservicios externos.
+     */
+    @Column(name = "snapshot", columnDefinition = "TEXT", nullable = true)
+    private String snapshot;
+
+    /**
      * Callback JPA que se ejecuta antes de persistir la entidad.
      * Inicializa el estado a CREATED si aún no está definido.
      */

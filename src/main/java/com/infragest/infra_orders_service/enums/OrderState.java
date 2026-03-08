@@ -8,6 +8,7 @@ package com.infragest.infra_orders_service.enums;
  * @since 2025-11-19
  */
 public enum OrderState {
+    CREATED_WITH_ERRORS,
     CREATED,
     IN_PROCESS,
     DISPATCHED,
