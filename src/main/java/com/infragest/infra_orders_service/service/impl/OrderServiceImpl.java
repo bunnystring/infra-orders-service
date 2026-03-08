@@ -610,7 +610,7 @@ public class OrderServiceImpl implements OrderService {
         order.setItems(items);
 
         // Guardar la entidad Order (con los items) en la base de datos
-        return orderRepository.save(order);
+        return orderRepository.saveAndFlush(order);
     }
 
     /**
