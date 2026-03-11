@@ -11,6 +11,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
@@ -70,7 +72,7 @@ public class OrderController {
     public ResponseEntity<OrderRs> createOrder(@Valid @RequestBody OrderRq orderRequest) {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         log.info("Autenticación antes de Feign: {}", authentication != null ? authentication.getName() : "Ninguna");
-        return ResponseEntity.status(201).body(orderService.createOrder(orderRequest));
+        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(orderRequest));
     }
 
     /**
