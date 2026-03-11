@@ -1,5 +1,6 @@
 package com.infragest.infra_orders_service.service.impl;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.infragest.infra_orders_service.client.DevicesClient;
 import com.infragest.infra_orders_service.client.EmployeeClient;
@@ -72,6 +73,8 @@ public class OrderServiceImpl implements OrderService {
      */
     private final RabbitTemplate rabbitTemplate;
 
+    private final ObjectMapper objectMapper;
+
     /**
      * Constructor con los parametros iniciales.
      *
@@ -88,8 +91,8 @@ public class OrderServiceImpl implements OrderService {
             DevicesClient devicesClient,
             GroupClient groupClient,
             EmployeeClient employeeClient,
-            RabbitTemplate rabbitTemplate
-        )
+            RabbitTemplate rabbitTemplate, ObjectMapper objectMapper
+    )
     {
         this.orderRepository = orderRepository;
         this.orderItemRepository = orderItemRepository;
@@ -97,6 +100,7 @@ public class OrderServiceImpl implements OrderService {
         this.groupClient = groupClient;
         this.employeeClient = employeeClient;
         this.rabbitTemplate = rabbitTemplate;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -112,30 +116,32 @@ public class OrderServiceImpl implements OrderService {
     @Override
     public OrderRs createOrder(OrderRq rq) {
 
-        Order order = saveOrderBase(rq);
+        // Crear la base de la orden
+        Order order = createOrderBase(rq);
 
         // Verificar dispositivos y obtener su estado original
         Map<UUID, String> originalStates = verifyDevicesAndFetchState(rq.getDevicesIds(), order);
 
-        if (order.getState() == OrderState.CREATED_WITH_ERRORS) {
-            orderRepository.saveAndFlush(order);
-            return toOrderRs(order);
-        }
+        // Reservar dispositivos
+        reserveDevices(rq.getDevicesIds(), order.getId(), order);
 
         // Crear la orden y guardar los datos
-        Order savedOrder = saveOrderAndItems(order, rq, originalStates);
-
-        // Reservar dispositivos
-        reserveDevices(rq.getDevicesIds(), savedOrder.getId());
+        order = saveOrderAndItems(order, rq, originalStates);
 
         // Obtener los correos asociados a la asignación
-        List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
+        List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId(), order);
+
+        // Validación centralizada y de recipients
+        Optional<OrderRs> earlyReturn = shouldReturnEarly(order, recipients);
+        if (earlyReturn.isPresent()) {
+            return earlyReturn.get();
+        }
 
         // Publicar el evento
-        publishOrderEvent(savedOrder, recipients);
+        publishOrderEvent(order, recipients);
 
         // Mapear y devolver la orden como DTO
-        return toOrderRs(savedOrder);
+        return toOrderRs(order);
     }
 
     /**
@@ -246,10 +252,17 @@ public class OrderServiceImpl implements OrderService {
      * @return Una lista de correos electrónicos asociados al asignado (uno o varios).
      * @throws OrderException Si ocurren errores de validación, dependencias externas o de negocio.
      */
-    private List<String> resolveRecipientsAndValidate(AssigneeType assigneeType, UUID assigneeId) {
+    private List<String> resolveRecipientsAndValidate(AssigneeType assigneeType, UUID assigneeId, Order order) {
         // Validación inicial
         if (assigneeType == null || assigneeId == null) {
-            throw new OrderException(MessageException.INVALID_REQUEST, OrderException.Type.BAD_REQUEST);
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("assignee")
+                    .type("INVALID_REQUEST")
+                    .message("assigneeType o assigneeId nulo")
+                    .timestamp(java.time.Instant.now())
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
+            return Collections.emptyList();
         }
 
         try {
@@ -262,34 +275,58 @@ public class OrderServiceImpl implements OrderService {
             } else if (assigneeType == AssigneeType.EMPLOYEE) {
                 recipients = validateEmployeeAndEmail(assigneeId);
             } else {
-                throw new OrderException(
-                        String.format(MessageException.ASSIGNEE_INVALID, assigneeType),
-                        OrderException.Type.BAD_REQUEST
-                );
+                OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                        .service("assignee")
+                        .type("ASSIGNEE_INVALID")
+                        .message("Tipo de asignado inválido: " + assigneeType)
+                        .timestamp(java.time.Instant.now())
+                        .assignedTypeId(assigneeType != null ? assigneeType.name() : null)
+                        .assignedId(assigneeId.toString())
+                        .build();
+                addErrorToOrderSnapshot(order, errorDto);
+                return Collections.emptyList();
             }
 
             // Verificar que la lista de correos no sea nula ni vacía
             if (recipients == null || recipients.isEmpty()) {
-                throw new OrderException(
-                        String.format(MessageException.ASSIGNEE_NOT_FOUND,
-                                assigneeId, assigneeType),
-                        OrderException.Type.NOT_FOUND
-                );
+                OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                        .service("assignee")
+                        .type("NO_RECIPIENTS")
+                        .message("No se encontraron destinatarios para " + assigneeType + ", id=" + assigneeId)
+                        .timestamp(java.time.Instant.now())
+                        .assignedTypeId(assigneeType.name())
+                        .assignedId(assigneeId.toString())
+                        .build();
+                addErrorToOrderSnapshot(order, errorDto);
+                return Collections.emptyList();
             }
 
             return recipients;
         } catch (FeignException.ServiceUnavailable fe) {
             log.error("Error comunicándose con infra-groups-service para assignee {}: {}", assigneeId, fe.getMessage(), fe);
-            throw new OrderException(
-                    MessageException.DEPENDENCY_ERROR,
-                    OrderException.Type.INTERNAL_SERVER
-            );
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("assignee")
+                    .type("SERVICE_UNAVAILABLE")
+                    .message("No se pudo acceder a la dependencia (" + assigneeType + "): " + fe.getMessage())
+                    .timestamp(java.time.Instant.now())
+                    .assignedTypeId(assigneeType.name())
+                    .assignedId(assigneeId.toString())
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
+            return Collections.emptyList();
+
         } catch (FeignException fe) {
-            log.error("Error al obtener los correos: {}", fe.getMessage());
-            throw new DeviceUnavailableException(
-                    extractFeignErrorMessage(fe, MessageException.DEPENDENCY_ERROR),
-                    DeviceUnavailableException.Type.INTERNAL_SERVER
-            );
+            log.error("Error de integración al obtener destinatarios para assignee {}: {}", assigneeId, fe.getMessage(), fe);
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("assignee")
+                    .type("DEPENDENCY_ERROR")
+                    .message("Fallo en integración para " + assigneeType + ": " + extractFeignErrorMessage(fe, MessageException.DEPENDENCY_ERROR))
+                    .timestamp(java.time.Instant.now())
+                    .assignedTypeId(assigneeType.name())
+                    .assignedId(assigneeId.toString())
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
+            return Collections.emptyList();
         }
     }
 
@@ -436,20 +473,13 @@ public class OrderServiceImpl implements OrderService {
                 .build();
     }
 
-    private Map<UUID, String> parseDeviceResponse(List<Map<String, Object>> devices, List<UUID> unavailable) {
-        Map<UUID, String> originalStates = new HashMap<>();
-        for (Map<String, Object> d : devices) {
-            UUID devId = parseDeviceId(d.get("id"));
-            String state = String.valueOf(d.getOrDefault("status", d.getOrDefault("state", "")));
-            originalStates.put(devId, state);
-
-            if ("OCCUPIED".equalsIgnoreCase(state) || "NEEDS_REPAIR".equalsIgnoreCase(state)) {
-                unavailable.add(devId);
-            }
-        }
-        return originalStates;
-    }
-
+    /**
+     * Parsea el ID del dispositivo desde un objeto genérico.
+     *
+     * @param idObj Objeto representando el UUID del dispositivo.
+     * @return UUID válido del dispositivo.
+     * @throws OrderException Si el formato no es válido.
+     */
     private UUID parseDeviceId(Object idObj) {
         try {
             if (idObj instanceof UUID) {
@@ -505,55 +535,72 @@ public class OrderServiceImpl implements OrderService {
         }
 
         if (errorMsg != null) {
-            order.setState(OrderState.CREATED_WITH_ERRORS);
-            order.setSnapshot(generarSnapshotJson("devices", errorType, errorMsg, deviceIds));
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("devices")
+                    .type(errorType)
+                    .message(errorMsg)
+                    .timestamp(java.time.Instant.now())
+                    .deviceIds(deviceIds)
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
             return Collections.emptyMap();
         }
-
-        // Validar que todos los dispositivos existan en la respuesta
-        /*if (devices == null || devices.size() != deviceIds.size()) {
-            throw new DeviceUnavailableException(
-                    String.format(MessageException.DEVICE_NOT_FOUND_BY_IDS,  deviceIds),
-                    DeviceUnavailableException.Type.NOT_FOUND
-            );
-        }*/
 
         if (devices == null || devices.size() != deviceIds.size()) {
-            // Encontrados < requeridos: lista de devices no integrados
             List<DeviceRs> finalDevices = devices;
-            List<UUID> notFound =
-                    deviceIds.stream()
-                            .filter(id -> finalDevices == null || finalDevices.stream().noneMatch(d -> d.getId().equals(id)))
-                            .toList();
+            List<UUID> notFound = deviceIds.stream()
+                    .filter(id -> finalDevices == null || finalDevices.stream().noneMatch(d -> d.getId().equals(id)))
+                    .toList();
 
-            order.setState(OrderState.CREATED_WITH_ERRORS);
-            order.setSnapshot(generarSnapshotJson(
-                    "devices",
-                    "NOT_FOUND",
-                    "No se encontraron todos los dispositivos: ids=" + notFound,
-                    notFound));
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("devices")
+                    .type("NOT_FOUND")
+                    .message("No se encontraron todos los dispositivos: ids=" + notFound)
+                    .timestamp(java.time.Instant.now())
+                    .deviceIds(notFound)
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
             return Collections.emptyMap();
         }
 
-        return processDeviceStates(devices);
+        return processDeviceStates(devices, order);
     }
 
-    // Método de utilidad para crear el snapshot JSON
-    private String generarSnapshotJson(String service, String type, String message, List<UUID> deviceIds) {
+    /**
+     * Agrega un error al snapshot de la orden, marca su estado con error y persiste el cambio.
+     *
+     * @param order  La orden a la que se añadirá el error en su snapshot.
+     * @param error  El error de integración/negocio a registrar.
+     */
+    public void addErrorToOrderSnapshot(Order order, OrderIntegrationErrorDto error) {
+        List<OrderIntegrationErrorDto> snapshotList = new ArrayList<>();
         try {
-            Map<String, Object> snap = new HashMap<>();
-            snap.put("service", service);
-            snap.put("type", type);
-            snap.put("message", message);
-            snap.put("timestamp", java.time.Instant.now().toString());
-            snap.put("deviceIds", deviceIds);
-            return new ObjectMapper().writeValueAsString(snap);
-        } catch (Exception ex) {
-            return service + ": " + type + " - " + message + " | deviceIds: " + deviceIds;
+            if (order.getSnapshot() != null && !order.getSnapshot().isBlank()) {
+                snapshotList = this.objectMapper.readValue(order.getSnapshot(), new TypeReference<List<OrderIntegrationErrorDto>>() {});
+            }
+        } catch (Exception e) {
+            log.warn("No se pudo deserializar snapshot existente para la orden {}, se iniciará uno nuevo", order.getId(), e);
+        }
+        snapshotList.add(error);
+        try {
+            order.setSnapshot(this.objectMapper.writeValueAsString(snapshotList));
+        } catch (Exception e) {
+            order.setSnapshot(error.toString());
+        }
+        order.setState(OrderState.CREATED_WITH_ERRORS);
+        if (orderRepository != null) {
+            orderRepository.saveAndFlush(order);
         }
     }
 
-    private Map<UUID, String> processDeviceStates(List<DeviceRs> devices) {
+    /**
+     * Procesa la respuesta del servicio de dispositivos, acumulando en snapshot los dispositivos no disponibles.
+     *
+     * @param devices Lista de dispositivos devuelta por el servicio de devices.
+     * @param order   Orden a la que se le asociarán los errores en snapshot si corresponde.
+     * @return Un mapa de estados originales por dispositivo (ID → estado).
+     */
+    private Map<UUID, String> processDeviceStates(List<DeviceRs> devices, Order order) {
         Map<UUID, String> originalStates = new HashMap<>();
         List<UUID> unavailableDevices = new ArrayList<>();
 
@@ -571,10 +618,14 @@ public class OrderServiceImpl implements OrderService {
 
         // Lanzar excepción si hay dispositivos no disponibles
         if (!unavailableDevices.isEmpty()) {
-            throw new DeviceUnavailableException(
-                    String.format(MessageException.EQUIPMENT_NOT_AVAILABLE, unavailableDevices),
-                    DeviceUnavailableException.Type.CONFLICT
-            );
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("devices")
+                    .type("DEVICE_UNAVAILABLE")
+                    .message("Equipos no disponibles: " + unavailableDevices)
+                    .timestamp(java.time.Instant.now())
+                    .deviceIds(unavailableDevices)
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
         }
 
         return originalStates;
@@ -588,29 +639,43 @@ public class OrderServiceImpl implements OrderService {
      * @throws DeviceUnavailableException La respuesta del servicio indica que los dispositivos no pudieron ser reservados.
      * Ocurre un error de comunicación con el servicio `devices`.
      */
-    private void reserveDevices(List<UUID> deviceIds, UUID orderId) {
+    private void reserveDevices(List<UUID> deviceIds, UUID orderId, Order order) {
         Map<String, Object> reserveRequest = Map.of("deviceIds", deviceIds, "state", "OCCUPIED","orderId", orderId);
+        List<DeviceRs> devices = null;
+        String errorMsg = null;
+        String errorType = null;
+
         try {
             ApiResponseDto<Void> response = devicesClient.reserveDevices(reserveRequest);
 
             // Verifica el éxito de la operación
             if (!response.isSuccess()) {
-                throw new DeviceUnavailableException(response.getMessage(), DeviceUnavailableException.Type.CONFLICT);
+                errorMsg = response.getMessage();
+                errorType = "RESERVATION_FAILED";
             }
 
         } catch (FeignException.ServiceUnavailable ex) {
             // Si el microservicio devuelve un 503
             log.error("El servicio de dispositivos no está disponible: {}", ex.getMessage());
-            throw new DeviceUnavailableException(
-                    MessageException.SERVICE_UNAVAILABLE,
-                    DeviceUnavailableException.Type.SERVICE_UNAVAILABLE
-            );
+            errorMsg = ex.getMessage();
+            errorType = "SERVICE_UNAVAILABLE";
+
         } catch (FeignException fe) {
             log.error("Error al reservar dispositivos: {}", fe.getMessage());
-            throw new DeviceUnavailableException(
-                    extractFeignErrorMessage(fe, MessageException.DEVICE_ERROR_COMMUNICATION),
-                    DeviceUnavailableException.Type.INTERNAL_SERVER
-            );
+            errorMsg = fe.getMessage();
+            errorType = "BAD_REQUEST";
+
+        }
+
+        if (errorMsg != null) {
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("devices")
+                    .type(errorType)
+                    .message("Error al reservar dispositivos: " + errorMsg)
+                    .timestamp(java.time.Instant.now())
+                    .deviceIds(deviceIds)
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
         }
     }
 
@@ -629,19 +694,21 @@ public class OrderServiceImpl implements OrderService {
         order.setAssigneeType(rq.getAssigneeType());
         order.setAssigneeId(rq.getAssigneeId());
 
-        List<UUID> deviceIds = rq.getDevicesIds();
-        List<OrderItem> items = deviceIds.stream()
-                .map(deviceId -> OrderItem.builder()
-                                .order(order)
-                                .deviceId(deviceId)
-                        .originalDeviceState(originalStates.getOrDefault(deviceId, "UNKNOWN"))
-                        .build())
-                .collect(Collectors.toList());
+        if (!originalStates.isEmpty()) {
+            List<UUID> deviceIds = rq.getDevicesIds();
+            List<OrderItem> items = deviceIds.stream()
+                    .map(deviceId -> OrderItem.builder()
+                            .order(order)
+                            .deviceId(deviceId)
+                            .originalDeviceState(originalStates.getOrDefault(deviceId, "UNKNOWN"))
+                            .build())
+                    .collect(Collectors.toList());
 
 
-        // Asociar los items creados con la entidad Order
-        order.getItems().clear();
-        order.getItems().addAll(items);
+            // Asociar los items creados con la entidad Order
+            order.getItems().clear();
+            order.getItems().addAll(items);
+        }
 
         // Guardar la entidad Order (con los items) en la base de datos
         return orderRepository.saveAndFlush(order);
@@ -652,12 +719,14 @@ public class OrderServiceImpl implements OrderService {
      * @param rq
      * @return
      */
-    private Order saveOrderBase(OrderRq rq) {
+    private Order createOrderBase(OrderRq rq) {
 
         // Crear la entidad Order Base
         Order order = Order.builder()
                 .description(rq.getDescription())
                 .state(OrderState.CREATED)
+                .assigneeId(rq.getAssigneeId())
+                .assigneeType(rq.getAssigneeType())
                 .notificationStatus(NotificationStatus.PENDING)
                 .build();
 
@@ -872,7 +941,7 @@ public class OrderServiceImpl implements OrderService {
     private void performStateSpecificActions(Order order, OrderState newState) {
 
         // Obtener los correos asociados a la asignación
-        List<String> recipients = resolveRecipientsAndValidate(order.getAssigneeType(), order.getAssigneeId());
+        List<String> recipients = resolveRecipientsAndValidate(order.getAssigneeType(), order.getAssigneeId(), order);
 
         // Notificar a RabbitMQ siempre que haya un cambio de estado
         publishOrderEvent(order, recipients);
@@ -882,7 +951,6 @@ public class OrderServiceImpl implements OrderService {
             handleFinishedState(order);
         }
     }
-
 
     /**
      * Maneja las acciones específicas para el estado {@link OrderState#FINISHED}.
@@ -908,4 +976,26 @@ public class OrderServiceImpl implements OrderService {
             );
         }
     }
+
+    /**
+     * Método auxiliar que centraliza las validaciones de corte temprano del flujo de creación de orden:
+     * - Si la orden tiene errores (estado {@link OrderState#CREATED_WITH_ERRORS}), se persiste y retorna el DTO.
+     * - Si la lista de destinatarios es nula o vacía, retorna el DTO.
+     * - Si todo es válido, retorna un Optional vacío.
+     *
+     * @param order      La orden a validar.
+     * @param recipients Lista de destinatarios de notificación.
+     * @return Optional con DTO de la orden solo si se debe salir del flujo principal.
+     */
+    private Optional<OrderRs> shouldReturnEarly(Order order, List<String> recipients) {
+        if (order.getState() == OrderState.CREATED_WITH_ERRORS) {
+            orderRepository.saveAndFlush(order);
+            return Optional.of(toOrderRs(order));
+        }
+        if (recipients == null || recipients.isEmpty()) {
+            return Optional.of(toOrderRs(order));
+        }
+        return Optional.empty();
+    }
+
 }
