@@ -11,6 +11,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
@@ -70,7 +72,7 @@ public class OrderController {
     public ResponseEntity<OrderRs> createOrder(@Valid @RequestBody OrderRq orderRequest) {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         log.info("Autenticación antes de Feign: {}", authentication != null ? authentication.getName() : "Ninguna");
-        return ResponseEntity.status(201).body(orderService.createOrder(orderRequest));
+        return ResponseEntity.status(HttpStatus.CREATED).body(orderService.createOrder(orderRequest));
     }
 
     /**
@@ -142,10 +144,32 @@ public class OrderController {
         return ResponseEntity.ok().build();
     }
 
-    @PutMapping("update/{orderId}")
+    /**
+     * Actualizar una orden existente.
+     *
+     * Permite modificar los datos de una orden, incluyendo dispositivos asignados
+     * y empleado o grupo responsable. Valida disponibilidad de recursos y gestiona
+     * automáticamente la reasignación de dispositivos.
+     *
+     * @param orderId UUID único de la orden a actualizar
+     * @param orderRq Datos actualizados de la orden (en formato JSON)
+     * @return ResponseEntity con código HTTP 200 (OK) si la actualización fue exitosa
+     */
+    @Operation(
+            summary = "Actualizar una orden existente",
+            description = "Modifica los datos de una orden existente, validando disponibilidad de recursos y gestionando la reasignación de dispositivos."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Orden actualizada exitosamente"),
+            @ApiResponse(responseCode = "400", description = "Datos de entrada inválidos", content = @Content),
+            @ApiResponse(responseCode = "404", description = "Orden, dispositivo, empleado o grupo no encontrado", content = @Content),
+            @ApiResponse(responseCode = "409", description = "Conflicto: dispositivos no disponibles o estado de orden no permite modificaciones", content = @Content),
+            @ApiResponse(responseCode = "500", description = "Error interno del servidor", content = @Content)
+    })
+    @PutMapping("/update/{orderId}")
     public ResponseEntity<Void> updateOrder(
             @PathVariable UUID orderId,
-            @RequestBody OrderRq orderRq
+            @Valid @RequestBody OrderRq orderRq
     ) {
         orderService.updateOrder(orderId, orderRq);
         return ResponseEntity.ok().build();
