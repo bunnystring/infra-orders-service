@@ -22,6 +22,7 @@ import com.infragest.infra_orders_service.service.OrderService;
 import com.infragest.infra_orders_service.util.MessageException;
 import feign.FeignException;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.http.HttpStatus;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -855,6 +856,33 @@ public class OrderServiceImpl implements OrderService {
                     String.format(MessageException.EQUIPMENT_RESTORE_FAILED, order.getId()),
                     OrderException.Type.INTERNAL_SERVER
             );
+        }
+    }
+
+    public void updateOrder(UUID orderId, OrderRq rq) {
+
+        // Recuperar la orden
+        Order order = orderRepository.findById(orderId).orElseThrow(
+                () -> new OrderException(MessageException.ORDER_NOT_FOUND, OrderException.Type.NOT_FOUND)
+        );
+
+        // Comparar los devicesIds de la orden nueva con la orden antigua y separa los que no coinciden
+        Set<UUID> currentDeviceIds = order.getItems().stream()
+                .map(OrderItem::getDeviceId)
+                .collect(Collectors.toSet());
+
+        Set<UUID> newDeviceIds = new HashSet<>(rq.getDevicesIds());
+
+        // Verificar dispositivos y obtener su estado original
+        Map<UUID, String> originalStates = verifyDevicesAndFetchState((List<UUID>) newDeviceIds);
+
+        // Validar si el tipo de asignación es diferente
+        if (order.getAssigneeType() != rq.getAssigneeType()) {
+            // Obtener los correos asociados a la asignación
+            List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId());
+
+            // Publicar el evento
+            publishOrderEvent(savedOrder, recipients);
         }
     }
 }

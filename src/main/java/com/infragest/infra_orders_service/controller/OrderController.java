@@ -141,4 +141,13 @@ public class OrderController {
         orderService.changeState(orderId, newState);
         return ResponseEntity.ok().build();
     }
+
+    @PutMapping("update/{orderId}")
+    public ResponseEntity<Void> updateOrder(
+            @PathVariable UUID orderId,
+            @RequestBody OrderRq orderRq
+    ) {
+        orderService.updateOrder(orderId, orderRq);
+        return ResponseEntity.ok().build();
+    }
 }
