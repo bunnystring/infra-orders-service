@@ -77,5 +77,4 @@ public interface OrderService {
      */
     void updateOrderNotificationStatus(NotificationEvent notificationEvent);
 
-
 }
