@@ -77,7 +77,6 @@ public class OrderServiceImpl implements OrderService {
 
     /**
      * Constructor con los parametros iniciales.
-     *
      * @param orderRepository
      * @param orderItemRepository
      * @param devicesClient
@@ -585,7 +584,8 @@ public class OrderServiceImpl implements OrderService {
         try {
             order.setSnapshot(this.objectMapper.writeValueAsString(snapshotList));
         } catch (Exception e) {
-            order.setSnapshot(error.toString());
+            log.error("No se pudo serializar el snapshot actualizado para la orden {}. El snapshot NO será actualizado para evitar corrupción. Error original: {}",
+                    order.getId(), e.getMessage(), e);
         }
         order.setState(OrderState.CREATED_WITH_ERRORS);
         if (orderRepository != null) {
@@ -641,7 +641,6 @@ public class OrderServiceImpl implements OrderService {
      */
     private void reserveDevices(List<UUID> deviceIds, UUID orderId, Order order) {
         Map<String, Object> reserveRequest = Map.of("deviceIds", deviceIds, "state", "OCCUPIED","orderId", orderId);
-        List<DeviceRs> devices = null;
         String errorMsg = null;
         String errorType = null;
 
@@ -954,7 +953,6 @@ public class OrderServiceImpl implements OrderService {
 
     /**
      * Maneja las acciones específicas para el estado {@link OrderState#FINISHED}.
-     *
      * Comportamiento:
      * - Libera los dispositivos asociados a la orden y restaura sus estados originales.
      *
