@@ -125,7 +125,7 @@ public class OrderServiceImpl implements OrderService {
         reserveDevices(rq.getDevicesIds(), order.getId(), order);
 
         // Crear la orden y guardar los datos
-        order = saveOrderAndItems(order, rq, originalStates);
+        order = saveOrderAndItems(order, rq, originalStates, false);
 
         // Obtener los correos asociados a la asignación
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId(), order);
@@ -688,25 +688,37 @@ public class OrderServiceImpl implements OrderService {
      *                       Si un dispositivo no tiene un estado en este mapa, se usará "UNKNOWN" como valor predeterminado.
      * @return La entidad {@link Order} recién creada y persistida en la base de datos.
      */
-    private Order saveOrderAndItems(Order order, OrderRq rq, Map<UUID, String> originalStates) {
+    private Order saveOrderAndItems(Order order, OrderRq rq, Map<UUID, String> newDeviceStates, boolean isUpdate) {
 
+        // Actualizar campos básicos
+        order.setDescription(rq.getDescription());
         order.setAssigneeType(rq.getAssigneeType());
         order.setAssigneeId(rq.getAssigneeId());
 
-        if (!originalStates.isEmpty()) {
-            List<UUID> deviceIds = rq.getDevicesIds();
-            List<OrderItem> items = deviceIds.stream()
-                    .map(deviceId -> OrderItem.builder()
+        if (!newDeviceStates.isEmpty()) {
+            if (isUpdate) {
+                // MODO ACTUALIZACIÓN: Solo agregar nuevos items
+                newDeviceStates.forEach((deviceId, originalState) -> {
+                    OrderItem newItem = OrderItem.builder()
                             .order(order)
                             .deviceId(deviceId)
-                            .originalDeviceState(originalStates.getOrDefault(deviceId, "UNKNOWN"))
-                            .build())
-                    .collect(Collectors.toList());
+                            .originalDeviceState(originalState)
+                            .build();
+                    order.getItems().add(newItem);
+                });
+            } else {
+                // MODO CREACIÓN: Reemplazar todos los items
+                List<OrderItem> items = rq.getDevicesIds().stream()
+                        .map(deviceId -> OrderItem.builder()
+                                .order(order)
+                                .deviceId(deviceId)
+                                .originalDeviceState(newDeviceStates.getOrDefault(deviceId, "UNKNOWN"))
+                                .build())
+                        .collect(Collectors.toList());
 
-
-            // Asociar los items creados con la entidad Order
-            order.getItems().clear();
-            order.getItems().addAll(items);
+                order.getItems().clear();
+                order.getItems().addAll(items);
+            }
         }
 
         // Guardar la entidad Order (con los items) en la base de datos
@@ -976,6 +988,92 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
+     * Actualiza los datos de una orden existente.
+     *
+     * @param orderId UUID de la orden a actualizar
+     * @param rq datos actualizados de la orden
+     * @throws OrderException si la orden no existe (NOT_FOUND)
+     * @throws DeviceException si algún dispositivo no está disponible o no existe
+     */
+    public void updateOrder(UUID orderId, OrderRq rq) {
+
+        // Recuperar la orden
+        Order order = orderRepository.findById(orderId).orElseThrow(
+                () -> new OrderException(MessageException.ORDER_NOT_FOUND, OrderException.Type.NOT_FOUND)
+        );
+
+        // Guardar valores originales para comparar
+        AssigneeType originalAssigneeType = order.getAssigneeType();
+        UUID originalAssigneeId = order.getAssigneeId();
+
+        // Comparar los devicesIds actuales vs nuevos
+        Set<UUID> currentDeviceIds = order.getItems().stream()
+                .map(OrderItem::getDeviceId)
+                .collect(Collectors.toSet());
+
+        Set<UUID> newDeviceIds = new HashSet<>(rq.getDevicesIds());
+
+        // Dispositivos a AGREGAR (están en el request pero NO en la orden actual)
+        List<UUID> devicesToAdd = newDeviceIds.stream()
+                .filter(id -> !currentDeviceIds.contains(id))
+                .collect(Collectors.toList());
+
+        // Dispositivos a REMOVER (están en la orden actual pero NO en el request)
+        List<UUID> devicesToRemove = currentDeviceIds.stream()
+                .filter(id -> !newDeviceIds.contains(id))
+                .collect(Collectors.toList());
+
+        // Remover dispositivos que ya no están
+        if (!devicesToRemove.isEmpty()) {
+            // Obtener estados originales de los items a remover (antes de eliminarlos)
+            Map<UUID, String> originalStatesToRestore = order.getItems().stream()
+                    .filter(item -> devicesToRemove.contains(item.getDeviceId()))
+                    .collect(Collectors.toMap(
+                            OrderItem::getDeviceId,
+                            OrderItem::getOriginalDeviceState
+                    ));
+
+            // Transformar respuesta a dto de tipo RestoreDevicesRq
+            RestoreDevicesRq restoreRequest = buildRestoreRequest(originalStatesToRestore);
+
+            // Restaurar estados de dispositivos ANTES de eliminar los items
+            devicesClient.restoreDeviceStates(restoreRequest);
+
+            // Eliminar OrderItems de la lista (orphanRemoval los borrará de BD)
+            order.getItems().removeIf(item -> devicesToRemove.contains(item.getDeviceId()));
+        }
+
+        // Agregar nuevos dispositivos
+        Map<UUID, String> newDeviceStates = new HashMap<>();
+        if (!devicesToAdd.isEmpty()) {
+            // Verificar y obtener estados originales de dispositivos nuevos
+            newDeviceStates = verifyDevicesAndFetchState(devicesToAdd, order);
+
+            // Reservar los nuevos dispositivos
+            reserveDevices(devicesToAdd, order.getId(), order);
+        }
+
+        //  Guardar la orden con los cambios
+        order = saveOrderAndItems(order, rq, newDeviceStates, true);
+
+        //  Validar si el tipo de asignación O el assigneeId cambió
+        boolean assignmentChanged = originalAssigneeType != rq.getAssigneeType()
+                || !originalAssigneeId.equals(rq.getAssigneeId());
+
+        if (assignmentChanged) {
+            // Obtener los correos asociados a la NUEVA asignación
+            List<String> recipients = resolveRecipientsAndValidate(
+                    rq.getAssigneeType(),
+                    rq.getAssigneeId(),
+                    order
+            );
+
+            // Publicar el evento
+            publishOrderEvent(order, recipients);
+        }
+    }
+
+    /**
      * Método auxiliar que centraliza las validaciones de corte temprano del flujo de creación de orden:
      * - Si la orden tiene errores (estado {@link OrderState#CREATED_WITH_ERRORS}), se persiste y retorna el DTO.
      * - Si la lista de destinatarios es nula o vacía, retorna el DTO.
@@ -996,4 +1094,25 @@ public class OrderServiceImpl implements OrderService {
         return Optional.empty();
     }
 
+    /**
+     * Construye una solicitud de restauración de estados de dispositivos.
+     *
+     * Transforma un mapa de estados originales en un objeto {@link RestoreDevicesRq}
+     * para enviar al servicio de dispositivos.
+     *
+     * @param originalStatesToRestore mapa con UUID del dispositivo y su estado original (String)
+     * @return solicitud de restauración con los dispositivos y estados a restaurar
+     */
+    private RestoreDevicesRq buildRestoreRequest(Map<UUID, String> originalStatesToRestore) {
+        List<RestoreDevicesRq.RestoreItem> items = originalStatesToRestore.entrySet().stream()
+                .map(entry -> RestoreDevicesRq.RestoreItem.builder()
+                        .deviceId(entry.getKey())
+                        .state(DeviceStatusEnum.valueOf(entry.getValue()))
+                        .build())
+                .collect(Collectors.toList());
+
+        return RestoreDevicesRq.builder()
+                .items(items)
+                .build();
+    }
 }

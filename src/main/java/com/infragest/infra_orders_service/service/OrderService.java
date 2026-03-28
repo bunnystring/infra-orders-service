@@ -77,4 +77,12 @@ public interface OrderService {
      */
     void updateOrderNotificationStatus(NotificationEvent notificationEvent);
 
+    /**
+     * Actualiza los datos de una orden existente.
+     *
+     * Permite modificar dispositivos asignados, empleado o grupo responsable y otros atributos.
+     * Valida disponibilidad de recursos y gestiona automáticamente la reasignación de dispositivos.
+     */
+    void updateOrder(UUID orderId, OrderRq orderRq);
+
 }

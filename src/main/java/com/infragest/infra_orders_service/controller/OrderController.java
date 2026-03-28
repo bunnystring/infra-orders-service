@@ -143,4 +143,35 @@ public class OrderController {
         orderService.changeState(orderId, newState);
         return ResponseEntity.ok().build();
     }
+
+    /**
+     * Actualizar una orden existente.
+     *
+     * Permite modificar los datos de una orden, incluyendo dispositivos asignados
+     * y empleado o grupo responsable. Valida disponibilidad de recursos y gestiona
+     * automáticamente la reasignación de dispositivos.
+     *
+     * @param orderId UUID único de la orden a actualizar
+     * @param orderRq Datos actualizados de la orden (en formato JSON)
+     * @return ResponseEntity con código HTTP 200 (OK) si la actualización fue exitosa
+     */
+    @Operation(
+            summary = "Actualizar una orden existente",
+            description = "Modifica los datos de una orden existente, validando disponibilidad de recursos y gestionando la reasignación de dispositivos."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Orden actualizada exitosamente"),
+            @ApiResponse(responseCode = "400", description = "Datos de entrada inválidos", content = @Content),
+            @ApiResponse(responseCode = "404", description = "Orden, dispositivo, empleado o grupo no encontrado", content = @Content),
+            @ApiResponse(responseCode = "409", description = "Conflicto: dispositivos no disponibles o estado de orden no permite modificaciones", content = @Content),
+            @ApiResponse(responseCode = "500", description = "Error interno del servidor", content = @Content)
+    })
+    @PutMapping("/update/{orderId}")
+    public ResponseEntity<Void> updateOrder(
+            @PathVariable UUID orderId,
+            @Valid @RequestBody OrderRq orderRq
+    ) {
+        orderService.updateOrder(orderId, orderRq);
+        return ResponseEntity.ok().build();
+    }
 }
