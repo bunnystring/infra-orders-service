@@ -125,7 +125,7 @@ public class OrderServiceImpl implements OrderService {
         reserveDevices(rq.getDevicesIds(), order.getId(), order);
 
         // Crear la orden y guardar los datos
-        order = saveOrderAndItems(order, rq, originalStates);
+        order = saveOrderAndItems(order, rq, originalStates, false);
 
         // Obtener los correos asociados a la asignación
         List<String> recipients = resolveRecipientsAndValidate(rq.getAssigneeType(), rq.getAssigneeId(), order);
@@ -688,25 +688,42 @@ public class OrderServiceImpl implements OrderService {
      *                       Si un dispositivo no tiene un estado en este mapa, se usará "UNKNOWN" como valor predeterminado.
      * @return La entidad {@link Order} recién creada y persistida en la base de datos.
      */
-    private Order saveOrderAndItems(Order order, OrderRq rq, Map<UUID, String> originalStates) {
+    private Order saveOrderAndItems(Order order, OrderRq rq, Map<UUID, String> newDeviceStates, boolean isUpdate) {
 
+        // Actualizar campos básicos
+        order.setDescription(rq.getDescription());
         order.setAssigneeType(rq.getAssigneeType());
         order.setAssigneeId(rq.getAssigneeId());
 
-        if (!originalStates.isEmpty()) {
-            List<UUID> deviceIds = rq.getDevicesIds();
-            List<OrderItem> items = deviceIds.stream()
-                    .map(deviceId -> OrderItem.builder()
+        if (!newDeviceStates.isEmpty()) {
+            if (isUpdate) {
+                // MODO ACTUALIZACIÓN: Solo agregar nuevos items
+                newDeviceStates.forEach((deviceId, originalState) -> {
+                    OrderItem newItem = OrderItem.builder()
                             .order(order)
                             .deviceId(deviceId)
-                            .originalDeviceState(originalStates.getOrDefault(deviceId, "UNKNOWN"))
-                            .build())
-                    .collect(Collectors.toList());
+                            .originalDeviceState(originalState)
+                            .build();
+                    order.getItems().add(newItem);
+                });
+            } else {
+                // MODO CREACIÓN: Reemplazar todos los items
+                List<OrderItem> items = rq.getDevicesIds().stream()
+                        .map(deviceId -> OrderItem.builder()
+                                .order(order)
+                                .deviceId(deviceId)
+                                .originalDeviceState(newDeviceStates.getOrDefault(deviceId, "UNKNOWN"))
+                                .build())
+                        .collect(Collectors.toList());
 
+                order.getItems().clear();
+                order.getItems().addAll(items);
+            }
+        }
 
-            // Asociar los items creados con la entidad Order
-            order.getItems().clear();
-            order.getItems().addAll(items);
+        // Validar y cambiar estado si la orden está completa
+        if(isUpdate) {
+            validateOrderState(order);
         }
 
         // Guardar la entidad Order (con los items) en la base de datos
@@ -865,6 +882,9 @@ public class OrderServiceImpl implements OrderService {
      */
     private void releaseOrderDevices(Order order) {
 
+        String errorMsg = null;
+        String errorType = null;
+
         // Construir la lista de items necesarios para el DTO del request
         List<RestoreDevicesRq.RestoreItem> restoreItems = order.getItems().stream()
                 .map(item -> RestoreDevicesRq.RestoreItem.builder()
@@ -882,6 +902,11 @@ public class OrderServiceImpl implements OrderService {
             );
         }
 
+        // Extraer solo los UUIDs para el errorDto
+        List<UUID> devicesIds = restoreItems.stream()
+                .map(RestoreDevicesRq.RestoreItem::getDeviceId)
+                .toList();
+
         // Crear la solicitud DTO para enviar al endpoint de restore
         RestoreDevicesRq restoreDevicesRq = RestoreDevicesRq.builder()
                 .items(restoreItems)
@@ -891,39 +916,45 @@ public class OrderServiceImpl implements OrderService {
 
         try {
             // Llamar al cliente Feign para restaurar los dispositivos
-            Map<String, Object> response = devicesClient.restoreDeviceStates(restoreDevicesRq);
+            ApiResponseDto<Void> response  = devicesClient.restoreDeviceStates(restoreDevicesRq);
 
-            // Validar la respuesta del servicio
-            if (response == null || !Boolean.TRUE.equals(response.get("success"))) {
-                String message = (String) response.getOrDefault("message", "La restauración de dispositivos falló sin detalles.");
-                throw new DeviceUnavailableException(
-                        String.format("Fallo en la restauración de dispositivos para la orden %s: %s", order.getId(), message),
-                        DeviceUnavailableException.Type.INTERNAL_SERVER
-                );
+            // Verifica el éxito de la operación
+            if (!response.isSuccess()) {
+                errorMsg = response.getMessage();
+                errorType = "RESTORE_FAILED";
             }
 
             log.info("Estados originales restaurados para todos los dispositivos de la orden {}", order.getId());
 
         } catch (FeignException.ServiceUnavailable fe) {
+
+            // Si el microservicio devuelve un 503
             log.error("El servicio de dispositivos no está disponible para la orden {}: {}", order.getId(), fe.getMessage());
-            throw new DeviceUnavailableException(
-                    MessageException.SERVICE_UNAVAILABLE,
-                    DeviceUnavailableException.Type.SERVICE_UNAVAILABLE
-            );
+            errorMsg = fe.getMessage();
+            errorType = "SERVICE_UNAVAILABLE";
 
         } catch (FeignException.BadRequest fe) {
+
             log.error("Solicitud inválida al servicio de dispositivos para la orden {}: {}", order.getId(), fe.getMessage());
-            throw new DeviceUnavailableException(
-                    MessageException.INVALID_REQUEST,
-                    DeviceUnavailableException.Type.BAD_REQUEST
-            );
+            errorMsg = fe.getMessage();
+            errorType = "BAD_REQUEST";
 
         } catch (FeignException fe) {
+
             log.error("Error de comunicación con el servicio de dispositivos para la orden {}: {}", order.getId(), fe.getMessage());
-            throw new DeviceUnavailableException(
-                    MessageException.DEVICE_ERROR_COMMUNICATION,
-                    DeviceUnavailableException.Type.INTERNAL_SERVER
-            );
+            errorMsg = fe.getMessage();
+            errorType = "INTERNAL_SERVER";
+        }
+
+        if (errorMsg != null) {
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("devices")
+                    .type(errorType)
+                    .message("Error al restaurar dispositivos: " + errorMsg)
+                    .timestamp(java.time.Instant.now())
+                    .deviceIds(devicesIds)
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
         }
     }
 
@@ -976,6 +1007,104 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
+     * Actualiza una orden existente, gestionando la reasignación de dispositivos.
+     *
+     * <p>Compara dispositivos actuales vs nuevos, restaura estados de removidos,
+     * verifica disponibilidad y reserva nuevos dispositivos. Publica evento de
+     * notificación si cambia el assignee.</p>
+     *
+     * <p><strong>Nota:</strong> Si falla la restauración de dispositivos, el error
+     * se registra en el snapshot y no se eliminan los items de la orden.</p>
+     *
+     * @param orderId UUID de la orden a actualizar
+     * @param rq datos actualizados (assignee, dispositivos, descripción)
+     * @throws OrderException si la orden no existe o datos inválidos
+     * @throws DeviceException si algún dispositivo no está disponible
+     */
+    public void updateOrder(UUID orderId, OrderRq rq) {
+
+        // Recuperar la orden
+        Order order = orderRepository.findById(orderId).orElseThrow(
+                () -> new OrderException(MessageException.ORDER_NOT_FOUND, OrderException.Type.NOT_FOUND)
+        );
+
+        // limpiar snapshot
+        order.setSnapshot(null);
+
+        // Guardar valores originales para comparar
+        AssigneeType originalAssigneeType = order.getAssigneeType();
+        UUID originalAssigneeId = order.getAssigneeId();
+
+        // Comparar los devicesIds actuales vs nuevos
+        Set<UUID> currentDeviceIds = order.getItems().stream()
+                .map(OrderItem::getDeviceId)
+                .collect(Collectors.toSet());
+
+        Set<UUID> newDeviceIds = new HashSet<>(rq.getDevicesIds());
+
+        // Dispositivos a AGREGAR (están en el request pero NO en la orden actual)
+        List<UUID> devicesToAdd = newDeviceIds.stream()
+                .filter(id -> !currentDeviceIds.contains(id))
+                .collect(Collectors.toList());
+
+        // Dispositivos a REMOVER (están en la orden actual pero NO en el request)
+        List<UUID> devicesToRemove = currentDeviceIds.stream()
+                .filter(id -> !newDeviceIds.contains(id))
+                .collect(Collectors.toList());
+
+        // Remover dispositivos que ya no están
+        if (!devicesToRemove.isEmpty()) {
+            // Obtener estados originales de los items a remover (antes de eliminarlos)
+            Map<UUID, String> originalStatesToRestore = order.getItems().stream()
+                    .filter(item -> devicesToRemove.contains(item.getDeviceId()))
+                    .collect(Collectors.toMap(
+                            OrderItem::getDeviceId,
+                            OrderItem::getOriginalDeviceState
+                    ));
+
+            // Transformar respuesta a dto de tipo RestoreDevicesRq
+            RestoreDevicesRq restoreRequest = buildRestoreRequest(originalStatesToRestore);
+
+            // Restaurar estados de dispositivos ANTES de eliminar los items
+            restoreDevices(restoreRequest, order);
+
+            // Eliminar OrderItems de la lista (orphanRemoval los borrará de BD) solo si el snapshot llega vacio
+            if (order.getSnapshot() == null) {
+                order.getItems().removeIf(item -> devicesToRemove.contains(item.getDeviceId()));
+            }
+        }
+
+        // Agregar nuevos dispositivos
+        Map<UUID, String> newDeviceStates = new HashMap<>();
+        if (!devicesToAdd.isEmpty()) {
+            // Verificar y obtener estados originales de dispositivos nuevos
+            newDeviceStates = verifyDevicesAndFetchState(devicesToAdd, order);
+
+            // Reservar los nuevos dispositivos
+            reserveDevices(devicesToAdd, order.getId(), order);
+        }
+
+        //  Guardar la orden con los cambios
+        order = saveOrderAndItems(order, rq, newDeviceStates, true);
+
+        //  Validar si el tipo de asignación O el assigneeId cambió
+        boolean assignmentChanged = originalAssigneeType != rq.getAssigneeType()
+                || !originalAssigneeId.equals(rq.getAssigneeId());
+
+        if (assignmentChanged) {
+            // Obtener los correos asociados a la NUEVA asignación
+            List<String> recipients = resolveRecipientsAndValidate(
+                    rq.getAssigneeType(),
+                    rq.getAssigneeId(),
+                    order
+            );
+
+            // Publicar el evento
+            publishOrderEvent(order, recipients);
+        }
+    }
+
+    /**
      * Método auxiliar que centraliza las validaciones de corte temprano del flujo de creación de orden:
      * - Si la orden tiene errores (estado {@link OrderState#CREATED_WITH_ERRORS}), se persiste y retorna el DTO.
      * - Si la lista de destinatarios es nula o vacía, retorna el DTO.
@@ -996,4 +1125,123 @@ public class OrderServiceImpl implements OrderService {
         return Optional.empty();
     }
 
+    /**
+     * Construye una solicitud de restauración de estados de dispositivos.
+     *
+     * Transforma un mapa de estados originales en un objeto {@link RestoreDevicesRq}
+     * para enviar al servicio de dispositivos.
+     *
+     * @param originalStatesToRestore mapa con UUID del dispositivo y su estado original (String)
+     * @return solicitud de restauración con los dispositivos y estados a restaurar
+     */
+    private RestoreDevicesRq buildRestoreRequest(Map<UUID, String> originalStatesToRestore) {
+        List<RestoreDevicesRq.RestoreItem> items = originalStatesToRestore.entrySet().stream()
+                .map(entry -> RestoreDevicesRq.RestoreItem.builder()
+                        .deviceId(entry.getKey())
+                        .state(DeviceStatusEnum.valueOf(entry.getValue()))
+                        .build())
+                .collect(Collectors.toList());
+
+        return RestoreDevicesRq.builder()
+                .items(items)
+                .build();
+    }
+
+    /**
+     * Valida si una orden con errores está lista para cambiar a estado CREATED.
+     *
+     * Verifica que todos los campos requeridos estén completos:
+     * - Tiene al menos un dispositivo asignado
+     * - Tiene assignee (empleado o grupo) configurado
+     * - El estado actual es CREATED_WITH_ERRORS
+     *
+     * Si cumple todas las condiciones, cambia el estado a CREATED.
+     *
+     * @param order orden a validar
+     */
+    private void validateOrderState(Order order) {
+        // Solo aplicar si el estado actual es CREATED_WITH_ERRORS
+        if (!OrderState.CREATED_WITH_ERRORS.equals(order.getState())) {
+            return;
+        }
+
+        // Validar que tenga al menos un dispositivo
+        boolean hasDevices = order.getItems() != null && !order.getItems().isEmpty();
+
+        // Validar que tenga assignee configurado
+        boolean hasAssignee = order.getAssigneeType() != null && order.getAssigneeId() != null;
+
+        // Si cumple todas las condiciones, cambiar a CREATED
+        if (hasDevices && hasAssignee) {
+            order.setState(OrderState.CREATED);
+            log.info("Orden {} cambió de CREATED_WITH_ERRORS a CREATED tras completar datos", order.getId());
+        }
+    }
+
+    /**
+     * Restaura los estados originales de los dispositivos asociados a una orden.
+     *
+     * Realiza la llamada al microservicio de dispositivos para restaurar los estados
+     * originales de cada dispositivo. Si ocurre algún error durante la comunicación,
+     * registra el error en el snapshot de la orden para trazabilidad.
+     *
+     * @param restoreDevicesRq solicitud con los dispositivos y sus estados originales a restaurar
+     * @param order orden que contiene los dispositivos a restaurar
+     * @throws FeignException.ServiceUnavailable si el servicio de dispositivos no está disponible (503)
+     * @throws FeignException.BadRequest si la solicitud es inválida (400)
+     * @throws FeignException si ocurre otro error de comunicación con el servicio
+     */
+    private void restoreDevices(RestoreDevicesRq restoreDevicesRq, Order order) {
+
+        String errorMsg = null;
+        String errorType = null;
+
+        // Extraer solo los UUIDs desde restoreDevicesRq.getItems()
+        List<UUID> devicesIds = restoreDevicesRq.getItems().stream()
+                .map(RestoreDevicesRq.RestoreItem::getDeviceId)
+                .toList();
+
+        try {
+            // Llamar al cliente Feign para restaurar los dispositivos
+            ApiResponseDto<Void> response  = devicesClient.restoreDeviceStates(restoreDevicesRq);
+
+            // Verifica el éxito de la operación
+            if (!response.isSuccess()) {
+                errorMsg = response.getMessage();
+                errorType = "RESTORE_FAILED";
+            }
+
+            log.info("Estados originales restaurados para todos los dispositivos de la orden {}", order.getId());
+
+        } catch (FeignException.ServiceUnavailable fe) {
+
+            // Si el microservicio devuelve un 503
+            log.error("El servicio de dispositivos no está disponible para la orden {}: {}", order.getId(), fe.getMessage());
+            errorMsg = fe.getMessage();
+            errorType = "SERVICE_UNAVAILABLE";
+
+        } catch (FeignException.BadRequest fe) {
+
+            log.error("Solicitud inválida al servicio de dispositivos para la orden {}: {}", order.getId(), fe.getMessage());
+            errorMsg = fe.getMessage();
+            errorType = "BAD_REQUEST";
+
+        } catch (FeignException fe) {
+
+            log.error("Error de comunicación con el servicio de dispositivos para la orden {}: {}", order.getId(), fe.getMessage());
+            errorMsg = fe.getMessage();
+            errorType = "INTERNAL_SERVER";
+        }
+
+        if (errorMsg != null) {
+            OrderIntegrationErrorDto errorDto = OrderIntegrationErrorDto.builder()
+                    .service("devices")
+                    .type(errorType)
+                    .message("Error al restaurar dispositivos: " + errorMsg)
+                    .timestamp(java.time.Instant.now())
+                    .deviceIds(devicesIds)
+                    .build();
+            addErrorToOrderSnapshot(order, errorDto);
+        }
+    }
 }

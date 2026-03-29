@@ -47,5 +47,5 @@ public interface DevicesClient {
      * @return respuesta con el estado de la operación
      */
     @PostMapping("/api/devices/restore")
-    Map<String, Object> restoreDeviceStates(@RequestBody RestoreDevicesRq restoreDevicesRq);
+    ApiResponseDto<Void>  restoreDeviceStates(@RequestBody RestoreDevicesRq restoreDevicesRq);
 }
